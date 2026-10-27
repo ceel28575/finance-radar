@@ -5,6 +5,8 @@ import threading
 from datetime import datetime
 from mx_runtime import ROOT, CST
 from mx_collector import db, collect_loop
+from cloud_sync import sync_exports
+from instance_lock import InstanceLock
 
 def export_snapshot():
     conn = db()
@@ -22,7 +24,7 @@ def export_snapshot():
             if any(t in json.dumps(x,ensure_ascii=False).lower() for t in ["奇幻团课","qmxp2077"]):
                 continue
             x["id"] = key
-            x["source"] = x.get("room_name") or x.get("source") or "MX"
+            x["source"] = x.get("room") or x.get("room_name") or x.get("source") or "MX"
             days.setdefault(day, []).append(x)
         folder = ROOT / "exports"
         folder.mkdir(exist_ok=True)
@@ -41,11 +43,12 @@ def main():
         while not stop.wait(60):
             try:
                 export_snapshot()
+                sync_exports(ROOT, stop)
             except Exception as error:
                 print("Export failed:",type(error).__name__,flush=True)
     worker = threading.Thread(target=loop,daemon=True)
     conn = db()
-    print("LOCAL MODE: no cloud upload, no AI calls. Export every 60 seconds.")
+    print("Export every 60 seconds. Cloud sync enabled when cloud-config.json is present. AI not connected.")
     print("Login manually in the browser. Keep this window open.")
     worker.start()
     try:
@@ -58,6 +61,8 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        with InstanceLock(ROOT / "collector.lock"):
+            main()
     except KeyboardInterrupt:
         print("Stopped. Local records retained.")
+

@@ -1,0 +1,7 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {normalizeBatch,dayOf} from '../lib/radar-validation.mjs';
+const item={id:'a',source:'MX',room:'测试房间',content:'正文',published_at:'2026-10-26T22:15:00Z'};
+test('CST archive and room source',()=>{const x=normalizeBatch({items:[item]});assert.equal(x.items[0].source,'测试房间');assert.equal(dayOf(x.items[0].published_at),'2026-10-27')});
+test('blocked sources excluded server side',()=>assert.equal(normalizeBatch({items:[{...item,author:'qmxp2077'}]}).items.length,0));
+test('invalid or naive dates rejected',()=>{for(const stamp of ['bad','2026-10-27T09:00:00'])assert.throws(()=>normalizeBatch({items:[{...item,published_at:stamp}]}))});
+test('overlarge batch rejected',()=>assert.throws(()=>normalizeBatch({items:Array(201).fill(item)})));

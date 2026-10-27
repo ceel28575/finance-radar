@@ -25,3 +25,4 @@ echo.
 echo [MX] Collector stopped. Exit code: %MX_EXIT%
 echo [MX] Read any error above. This window stays open; type exit to close.
 exit /b %MX_EXIT%
+
