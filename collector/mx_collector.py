@@ -246,12 +246,18 @@ def discover_rooms(page):
 def click_room(page, room):
     if room.get("is_dup"):
         raise ValueError("duplicate room identity is unresolved")
-    # A locator is re-resolved against the current page for each action.
-    # Match the full title, not a substring; never silently choose the first match.
-    title = page.locator(SEL_ROOM_NAME).filter(
-        has_text=re.compile(r"^\s*" + re.escape(room["name"]) + r"\s*$"))
-    target = page.locator(SEL_ROOM).filter(has=title)
-    target.wait_for(state="visible", timeout=10000)
+    # Resolve title text in Python, avoiding nested relative-locator matching.
+    # Do not fall back to a guessed room index or force-click hidden elements.
+    titles = page.locator(SEL_ROOM_NAME)
+    names = titles.all_inner_texts()
+    matches = [i for i, name in enumerate(names) if name.strip() == room["name"].strip()]
+    if len(matches) != 1:
+        print("房间定位失败：标题总数=%d，精确匹配数=%d。" % (len(names), len(matches)), flush=True)
+        raise ValueError("room title is missing or not unique")
+    target = titles.nth(matches[0])
+    target.scroll_into_view_if_needed(timeout=10000)
+    if target.inner_text().strip() != room["name"].strip():
+        raise ValueError("room list changed before click")
     target.click(timeout=10000)
 
 
@@ -332,6 +338,7 @@ def collect_loop(conn):
         while True:
             total = done = backlog = unmapped = history_done = 0
             last_error = ""
+            consecutive_failures = 0
             try:
                 rooms = discover_rooms(page)
                 total = len(rooms)
@@ -351,11 +358,16 @@ def collect_loop(conn):
                         click_room(page, room)
                     except Exception as error:
                         last_error = "房间切换失败（%s），保留采集断点。" % type(error).__name__
+                        consecutive_failures += 1
                         print(last_error)
                         save_status(conn, "collector", {"status": "collecting", "stage": "room_switch_failed",
                                     "rooms_total": total, "rooms_done": done, "backlog": total - history_done,
                                     "rooms_unmapped": unmapped, "last_error": last_error})
+                        if consecutive_failures >= 3:
+                            print("连续3次切换失败，停止本轮。请截图MX房间列表与本窗口，等待修复。", flush=True)
+                            return
                         continue
+                    consecutive_failures = 0
                     page.wait_for_timeout(1200)
                     loaded_all = load_history(page, loaded_all, conn, room)
                     enqueue(conn, extract_messages(page, room))
