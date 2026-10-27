@@ -1,0 +1,8 @@
+collector/.venv/
+collector/mx_profile/
+collector/*.db*
+collector/exports/
+collector/logs/
+collector/config.json
+**/__pycache__/
+.env*
