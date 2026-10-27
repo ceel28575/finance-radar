@@ -4,8 +4,8 @@ import os
 import threading
 from datetime import datetime
 from mx_runtime import ROOT, CST
-from mx_collector import db, collect_loop
-from cloud_sync import sync_exports
+from mx_collector import db, collect_loop, save_status
+from cloud_sync import sync_exports, SyncError
 from instance_lock import InstanceLock
 
 def export_snapshot():
@@ -40,22 +40,30 @@ def export_snapshot():
 def main():
     stop = threading.Event()
     def loop():
-        while not stop.wait(60):
+        while not stop.is_set():
             try:
                 export_snapshot()
-                sync_exports(ROOT, stop)
+                uploaded = sync_exports(ROOT, stop)
+                if uploaded is None:
+                    print("未配置云端同步：记录仅保存在本机，请从网站下载同步配置。", flush=True)
+            except SyncError as error:
+                print("同步未完成：", str(error), "；数据保留，下轮重试。", flush=True)
             except Exception as error:
-                print("Export failed:",type(error).__name__,flush=True)
+                print("导出或同步失败（%s）：请检查网络及本机文件，数据保留，下轮重试。" % type(error).__name__, flush=True)
+            if stop.wait(60):
+                break
     worker = threading.Thread(target=loop,daemon=True)
     conn = db()
     print("Export every 60 seconds. Cloud sync enabled when cloud-config.json is present. AI not connected.")
     print("Login manually in the browser. Keep this window open.")
+    save_status(conn, "collector", {"status": "connected", "stage": "waiting_login", "rooms_total": 0, "rooms_done": 0})
     worker.start()
     try:
         collect_loop(conn)
     finally:
         stop.set()
         worker.join()
+        save_status(conn, "collector", {"status": "stopped", "stage": "stopped"})
         conn.close()
         export_snapshot()
 
