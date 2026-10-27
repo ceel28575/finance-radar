@@ -120,6 +120,16 @@ def read_status(conn, scope):
 
 def enqueue(conn, items):
     for item in items:
+        previous = conn.execute("SELECT payload FROM outbox WHERE source_key=?", (item["source_key"],)).fetchone()
+        if previous:
+            old = json.loads(previous[0])
+            # Collection timestamps alone must not resend unchanged records.
+            old.pop("collected_at", None)
+            current = {k: v for k, v in item.items() if k != "collected_at"}
+            if old != current:
+                conn.execute("UPDATE outbox SET payload=?, status='pending', attempts=0, sent_at=NULL, fail_reason=NULL WHERE source_key=?",
+                             (json.dumps(item, ensure_ascii=False), item["source_key"]))
+            continue
         conn.execute("INSERT OR IGNORE INTO outbox (source_key, payload, status, created_at) VALUES (?,?,'pending',?)",
                      (item["source_key"], json.dumps(item, ensure_ascii=False), now_iso()))
     conn.commit()
@@ -364,8 +374,8 @@ def collect_loop(conn):
                                     "rooms_total": total, "rooms_done": done, "backlog": total - history_done,
                                     "rooms_unmapped": unmapped, "last_error": last_error})
                         if consecutive_failures >= 3:
-                            print("连续3次切换失败，停止本轮。请截图MX房间列表与本窗口，等待修复。", flush=True)
-                            return
+                            print("连续3次切换失败，暂停本轮，60秒后自动重试；请检查MX登录状态。", flush=True)
+                            break
                         continue
                     consecutive_failures = 0
                     page.wait_for_timeout(1200)
@@ -395,7 +405,7 @@ def collect_loop(conn):
 
 def main():
     check_config()
-    print("采集器版本：2026-10-23-room-fix（房间切换修复版）")
+    print("采集器版本：2026-10-28-recovery（断线重试与记录更新版）")
     conn = db()
     stop = threading.Event()
     save_status(conn, "collector", {"status": "connected", "stage": "waiting_login", "rooms_total": 0, "rooms_done": 0})
