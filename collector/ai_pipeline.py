@@ -731,20 +731,35 @@ def worker_delay(result=None, failed=False, now=None):
     return next_run_delay(now)
 
 
-def _collector_round_complete(conn):
+def _collector_round_complete(conn, today, now=None):
     try:
         row = conn.execute(
             "SELECT value FROM runtime_status WHERE scope='collector'"
         ).fetchone()
     except sqlite3.Error:
-        return True
+        return False
     if not row:
-        return True
+        return False
     try:
         status = json.loads(row[0])
+        completed_at = datetime.fromisoformat(
+            str(status.get("updated_at") or "").replace("Z", "+00:00")
+        ).astimezone(CST)
     except (TypeError, ValueError):
         return False
-    if status.get("stage") != "round_complete":
+    now = now or now_bj()
+    age_seconds = (now - completed_at).total_seconds()
+    # Never use yesterday's completed scan to freeze today's pool. The collector
+    # normally scans every minute, so a three-minute freshness window tolerates
+    # scheduling jitter without accepting stale or future-dated status.
+    if (
+        status.get("stage") != "round_complete"
+        or status.get("status") != "collecting"
+        or completed_at.date().isoformat() != today
+        or age_seconds < -30
+        or age_seconds > 180
+        or status.get("last_error")
+    ):
         return False
     total = int(status.get("rooms_total", 0) or 0)
     done = int(status.get("rooms_done", 0) or 0)
@@ -822,7 +837,7 @@ def run_ai_cycle(root, api_key):
         next_day = _next_business_day(today)
         next_pool = _get_pool(conn, next_day)
         need_daily_pool = after_close and next_pool is None
-        if need_daily_pool and not _collector_round_complete(conn):
+        if need_daily_pool and not _collector_round_complete(conn, today, now):
             _status(
                 conn, "processing",
                 "等待 MX 完成当日全部房间扫描和历史回补；完成后再生成并冻结次日股票池。",
