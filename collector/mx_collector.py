@@ -684,7 +684,7 @@ def collect_loop(conn):
 
 def main():
     check_config()
-    print("采集器版本：2026-10-28-recovery（断线重试与记录更新版）")
+    print("采集器版本：2026-10-30-ai-ocr-history（双模型、OCR、增量历史回补版）")
     conn = db()
     stop = threading.Event()
     save_status(conn, "collector", {"status": "connected", "stage": "waiting_login", "rooms_total": 0, "rooms_done": 0})
