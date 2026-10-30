@@ -4,6 +4,7 @@ import os
 import threading
 from datetime import datetime
 from mx_runtime import ROOT, CST
+from mx_ocr import find_tesseract
 from mx_collector import db, collect_loop, save_status
 from cloud_sync import sync_exports, SyncError
 from instance_lock import InstanceLock
@@ -40,6 +41,8 @@ def export_snapshot():
             row = conn.execute("SELECT value FROM ai_state WHERE key='status'").fetchone()
             if row:
                 ai_status = json.loads(row[0])
+                if isinstance(ai_status, dict):
+                    ai_status["ocr_available"] = bool(find_tesseract())
         except Exception:
             # AI tables may not exist during the very first collector boot.
             pass
