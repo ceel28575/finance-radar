@@ -26,7 +26,8 @@ ARK_URL = "https://ark.cn-beijing.volces.com/api/v3/responses"
 ARK_MODEL = os.environ.get("ARK_MODEL", "doubao-seed-evolving")
 MAX_QWEN_ITEMS = 12
 MAX_DAILY_CONTEXT = 40
-PROMPT_VERSION = "trade-actions-v2"
+MAX_ACTION_SCAN = 3000
+PROMPT_VERSION = "trade-actions-v3"
 
 
 class AIError(RuntimeError):
@@ -476,8 +477,14 @@ def _normalize_stocks(value, allowed_ids):
     return result
 
 
-def _call_doubao(api_key, today, generated_at, analyses, previous_report):
+def _call_doubao(api_key, today, generated_at, analyses, previous_report, action_candidates=None):
+    action_candidates = action_candidates or []
     allowed_ids = {str(row["source"]["id"]) for row in analyses}
+    allowed_ids.update(
+        str(evidence_id)
+        for candidate in action_candidates
+        for evidence_id in candidate.get("evidence_ids", [])
+    )
     system = (
         "你是A股财经研究分析师。只能根据提供的原始资讯和本地千问提取结果进行研判。"
         "本地千问结果只是线索，必须回看原文；不能把未经证实的传闻写成事实。"
@@ -500,6 +507,7 @@ def _call_doubao(api_key, today, generated_at, analyses, previous_report):
         "generated_at": generated_at,
         "previous_report": previous_report or {},
         "items": analyses,
+        "explicit_action_candidates": action_candidates[:40],
     }
     body = {
         "model": ARK_MODEL,
@@ -571,17 +579,8 @@ def _save_report(conn, report):
 def _save_pool_once(conn, day, stocks, generated_at):
     existing = _get_pool(conn, day)
     if existing is not None:
-        # Keep a non-empty daily pool immutable. An empty placeholder is not
-        # frozen forever: allow the first evidence-backed candidates to fill it.
-        if existing.get("stocks") or not stocks:
-            return existing
-        payload = {"stocks": stocks, "generated_at": generated_at}
-        conn.execute(
-            "UPDATE ai_daily_pool SET payload=?,created_at=? WHERE pool_date=?",
-            (json.dumps(payload, ensure_ascii=False), generated_at, day),
-        )
-        conn.commit()
-        return _get_pool(conn, day) or payload
+        # Even an empty pool is a daily snapshot; never change it intraday.
+        return existing
     payload = {"stocks": stocks, "generated_at": generated_at}
     conn.execute(
         "INSERT OR IGNORE INTO ai_daily_pool(pool_date,payload,created_at) VALUES(?,?,?)",
@@ -602,11 +601,11 @@ def _is_after_close(now):
     return now.weekday() < 5 and (now.hour, now.minute) >= (15, 10)
 
 
-def _load_analyses(conn, day):
+def _load_analyses(conn, day, limit=MAX_DAILY_CONTEXT, include_irrelevant=False):
     rows = conn.execute(
         "SELECT source_key,source_json,analysis_json,fingerprint FROM ai_item_analysis "
         "WHERE day=? ORDER BY updated_at DESC LIMIT ?",
-        (day, MAX_DAILY_CONTEXT),
+        (day, max(1, int(limit))),
     ).fetchall()
     result = []
     for source_key, source_json, analysis_json, fingerprint in reversed(rows):
@@ -615,10 +614,95 @@ def _load_analyses(conn, day):
             analysis = json.loads(analysis_json)
         except ValueError:
             continue
-        if int(analysis.get("relevance", 0) or 0) <= 0:
+        if not include_irrelevant and int(analysis.get("relevance", 0) or 0) <= 0:
             continue
         result.append({"source": source, "local_analysis": analysis})
     return result
+
+
+def _action_based_candidates(analyses):
+    """Build evidence-backed candidates when a company and explicit action share a clause."""
+    grouped = {}
+    for row in analyses:
+        source = row.get("source") or {}
+        local = row.get("local_analysis") or {}
+        content = str(source.get("content") or "")
+        companies = local.get("companies") if isinstance(local.get("companies"), list) else []
+        companies = [
+            str(name).strip() for name in companies
+            if isinstance(name, str) and 2 <= len(name.strip()) <= 40
+            and not re.fullmatch(r"\d{6}", name.strip())
+        ]
+        if not content or not companies:
+            continue
+        clauses = [part.strip() for part in re.split(r"[，,；;。！？!?\n]+", content) if part.strip()]
+        for clause in clauses:
+            signals = [signal for signal in _trade_action_signals(clause) if not signal["negated"]]
+            directions = {signal["direction"] for signal in signals}
+            if len(directions) != 1:
+                continue
+            matched = list(dict.fromkeys(name for name in companies if name in clause))
+            if len(matched) != 1:
+                continue
+            name = matched[0]
+            direction = next(iter(directions))
+            evidence_id = str(source.get("id") or "")
+            if not evidence_id:
+                continue
+            phrases = list(dict.fromkeys(signal["phrase"] for signal in signals))
+            phrase_text = "、".join(phrases)
+            published_at = str(source.get("published_at") or "")
+            candidate = {
+                "name": name,
+                "direction": direction,
+                "score": max(60, min(85, 60 + 5 * int(local.get("relevance", 0) or 0))),
+                "sector": "待归类",
+                "reason": "原文明确出现操作词“%s”，按交易意图规则归入%s。原文片段：%s" % (
+                    phrase_text, "看多" if direction == "bull" else "看空", clause[:260]
+                ),
+                "catalyst": str(local.get("summary") or "")[:500],
+                "risk": "这是原文操作意图归类，不代表独立核实的投资结论；请结合其他来源与风险判断。",
+                "invalidation": "出现更新的相反操作信号或原有逻辑失效时重新评估。",
+                "change": "按原文交易动作识别：" + phrase_text,
+                "evidence_ids": [evidence_id],
+                "_signal_at": published_at,
+            }
+            grouped.setdefault(name, []).append(candidate)
+
+    result = []
+    for name, candidates in grouped.items():
+        latest_at = max(candidate["_signal_at"] for candidate in candidates)
+        latest = [candidate for candidate in candidates if candidate["_signal_at"] == latest_at]
+        directions = {candidate["direction"] for candidate in latest}
+        if len(directions) != 1:
+            continue
+        chosen = dict(latest[-1])
+        chosen["evidence_ids"] = list(dict.fromkeys(
+            evidence for candidate in latest for evidence in candidate["evidence_ids"]
+        ))[:12]
+        chosen.pop("_signal_at", None)
+        result.append(chosen)
+    return sorted(result, key=lambda item: (-item["score"], item["name"]))
+
+
+def _merge_action_candidates(model_stocks, action_candidates):
+    """Explicit source actions take precedence over a model's opposite label."""
+    result = [
+        dict(row) for row in (model_stocks or [])
+        if isinstance(row, dict) and row.get("name")
+    ]
+    for candidate in action_candidates or []:
+        result = [row for row in result if row.get("name") != candidate["name"]]
+        result.append(dict(candidate))
+    return result[:40]
+
+
+def worker_delay(result=None, failed=False, now=None):
+    if failed:
+        return 120
+    if int((result or {}).get("pending_remaining", 0) or 0) > 0:
+        return 5
+    return next_run_delay(now)
 
 
 def run_ai_cycle(root, api_key):
@@ -638,6 +722,7 @@ def run_ai_cycle(root, api_key):
             ).fetchone()
             if not old or old[0] != digest:
                 pending.append((source_key, item, digest))
+
         if pending:
             batch = pending[:MAX_QWEN_ITEMS]
             qwen_input = [(key, item) for key, item, _ in batch]
@@ -660,49 +745,97 @@ def run_ai_cycle(root, api_key):
             conn.commit()
             print("本地千问完成：%d 条新增/变更资讯。" % len(batch), flush=True)
 
-        analyses = _load_analyses(conn, today)
-        if not analyses:
-            _status(conn, "ready", "模型连接正常，等待当日可分析的文字资讯。", generated_at)
-            return {"status": "ready", "analysed": 0, "report": False}
+        pending_remaining = max(0, len(pending) - (len(batch) if pending else 0))
+        if pending_remaining:
+            _status(
+                conn, "processing",
+                "本地千问正在分批处理当日资讯，当前队列尚余 %d 条；处理完成后再生成完整股票池。" % pending_remaining,
+                generated_at,
+            )
+            return {
+                "status": "processing",
+                "analysed": len(sources) - pending_remaining,
+                "report": False,
+                "pending_remaining": pending_remaining,
+            }
+
+        all_analyses = _load_analyses(
+            conn, today, limit=MAX_ACTION_SCAN, include_irrelevant=True
+        )
+        relevant_analyses = [
+            row for row in all_analyses
+            if int((row.get("local_analysis") or {}).get("relevance", 0) or 0) > 0
+        ]
+        analyses = relevant_analyses[-MAX_DAILY_CONTEXT:]
+        action_candidates = _action_based_candidates(all_analyses)
+        after_close = _is_after_close(now)
+        next_day = _next_business_day(today)
+        next_pool = _get_pool(conn, next_day)
+
+        if not analyses and not action_candidates:
+            if after_close:
+                if _get_pool(conn, today) is None:
+                    _save_pool_once(conn, today, [], generated_at)
+                if next_pool is None:
+                    _save_pool_once(conn, next_day, [], generated_at)
+                empty_report = {
+                    "date": today,
+                    "generated_at": generated_at,
+                    "title": "今日未识别到明确买卖操作",
+                    "summary": "已完成当日可分析文字资讯处理，但没有找到可与具体公司对应的有效买入、低吸、高抛或卖出信号。",
+                    "index_reason": "",
+                    "bull_probability": None,
+                    "risk": "空股票池表示当前证据不足，不代表市场没有机会。",
+                    "stocks": [],
+                    "models": {"local": QWEN_MODEL, "cloud": ARK_MODEL},
+                }
+                _save_report(conn, empty_report)
+                _save_report(conn, dict(
+                    empty_report, date=next_day, title="次日预备股票池",
+                    summary="根据 " + today + " 的完整资讯处理结果，暂未发现可与具体公司对应的明确交易动作。",
+                ))
+            _status(conn, "ready", "已完成文字资讯处理；当前没有足够证据识别明确的个股买卖动作。", generated_at)
+            return {
+                "status": "ready", "analysed": len(all_analyses),
+                "report": after_close, "pending_remaining": 0,
+            }
 
         digest_source = json.dumps(
             {
                 "prompt_version": PROMPT_VERSION,
                 "items": [(x["source"]["id"], x["local_analysis"]) for x in analyses],
+                "action_candidates": action_candidates,
             },
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
         digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
         last_digest = _state_get(conn, "report_digest:" + today)
-        next_day = _next_business_day(today)
-        next_pool = _get_pool(conn, next_day)
-        after_close = _is_after_close(now)
-        need_daily_pool = after_close and (
-            next_pool is None or (not next_pool.get("stocks") and digest != last_digest)
-        )
+        need_daily_pool = after_close and next_pool is None
         if digest == last_digest and not need_daily_pool:
             _status(conn, "ready", "模型连接正常；本轮没有新的有效资讯变化。", generated_at)
-            return {"status": "ready", "analysed": len(analyses), "report": False}
+            return {
+                "status": "ready", "analysed": len(all_analyses),
+                "report": False, "pending_remaining": 0,
+            }
 
         previous = _latest_report(conn, today) or {}
-        model_report = _call_doubao(api_key, today, generated_at, analyses, previous)
-        # During the session, reports may refresh with new evidence but the
-        # daily stock pool is not frozen until after the close. This also lets
-        # a first-day deployment build a complete pool instead of freezing the
-        # first small intraday batch.
+        model_report = _call_doubao(
+            api_key, today, generated_at, analyses, previous, action_candidates
+        )
+        model_report["stocks"] = _merge_action_candidates(
+            model_report.get("stocks", []), action_candidates
+        )
+
+        # Freeze only after the Qwen backlog is fully drained. Empty is a valid
+        # daily snapshot and remains empty for the rest of that trading day.
         today_pool = _get_pool(conn, today)
         if today_pool is None and after_close:
             today_pool = _save_pool_once(conn, today, model_report.get("stocks", []), generated_at)
-        elif today_pool is not None and not today_pool.get("stocks") and model_report.get("stocks"):
-            # An empty placeholder from the previous close may be filled by the
-            # first evidence-backed action list; once non-empty, the pool freezes.
-            today_pool = _save_pool_once(conn, today, model_report.get("stocks", []), generated_at)
         today_stocks = (
             today_pool.get("stocks", [])
-            if today_pool and today_pool.get("stocks")
+            if today_pool is not None
             else model_report.get("stocks", [])
         )
-
         current_report = dict(model_report, date=today, stocks=today_stocks)
         _save_report(conn, current_report)
 
@@ -712,7 +845,7 @@ def run_ai_cycle(root, api_key):
                 model_report,
                 date=next_day,
                 title="次日预备股票池",
-                summary="根据 " + today + " 收盘前后已采集的资讯生成，供下一交易日观察；盘中不随刷新改变股票池。",
+                summary="根据 " + today + " 全部已处理资讯生成，供下一交易日观察；盘中不随刷新改变股票池。",
                 stocks=frozen.get("stocks", []),
             )
             _save_report(conn, next_report)
@@ -727,10 +860,14 @@ def run_ai_cycle(root, api_key):
             ),
             flush=True,
         )
-        return {"status": "ready", "analysed": len(analyses), "report": True}
+        return {
+            "status": "ready",
+            "analysed": len(all_analyses),
+            "report": True,
+            "pending_remaining": 0,
+        }
     finally:
         conn.close()
-
 
 def next_run_delay(now=None):
     now = now or now_bj()
@@ -751,6 +888,13 @@ def next_run_delay(now=None):
 
 def ai_worker(stop, root, api_key):
     if not api_key:
+        try:
+            conn = sqlite3.connect(str(Path(root) / "mx_outbox.db"), timeout=10)
+            ensure_ai_schema(conn)
+            _status(conn, "disabled", "未提供豆包 API Key；AI 分析未启动，MX 采集与同步继续。")
+            conn.close()
+        except sqlite3.Error:
+            pass
         print("未提供豆包 API Key：AI 分析未启动；MX 采集与同步不受影响。", flush=True)
         return
     print(
@@ -759,9 +903,12 @@ def ai_worker(stop, root, api_key):
         flush=True,
     )
     while not stop.is_set():
+        failed = False
+        result = None
         try:
-            run_ai_cycle(root, api_key)
+            result = run_ai_cycle(root, api_key)
         except AIError as error:
+            failed = True
             try:
                 conn = sqlite3.connect(str(Path(root) / "mx_outbox.db"), timeout=10)
                 ensure_ai_schema(conn)
@@ -771,6 +918,17 @@ def ai_worker(stop, root, api_key):
                 pass
             print("AI 分析未完成：%s；原始资讯保留，采集和同步继续。" % error, flush=True)
         except Exception as error:
+            failed = True
+            try:
+                conn = sqlite3.connect(str(Path(root) / "mx_outbox.db"), timeout=10)
+                ensure_ai_schema(conn)
+                _status(conn, "degraded", "AI 处理异常（%s），120秒后重试。" % type(error).__name__)
+                conn.close()
+            except sqlite3.Error:
+                pass
             print("AI 分析暂时失败（%s）；原始资讯保留，稍后重试。" % type(error).__name__, flush=True)
-        if stop.wait(next_run_delay()):
+        delay = worker_delay(result, failed=failed)
+        if result and result.get("pending_remaining", 0):
+            print("AI 预处理积压 %d 条，5秒后继续处理。" % result["pending_remaining"], flush=True)
+        if stop.wait(delay):
             break
