@@ -10,12 +10,13 @@ import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from playwright.sync_api import sync_playwright
 from mx_runtime import ROOT, CST, load_runtime
 from mx_transport import safe_post
+from mx_ocr import find_tesseract, ocr_image_bytes
 
 INGEST_URL = HEARTBEAT_URL = TOKEN = ""
 PROFILE = str(ROOT / "mx_profile")
@@ -271,15 +272,41 @@ def click_room(page, room):
     target.click(timeout=10000)
 
 
+def _ocr_image_from_page(page, src, executable):
+    parsed = urlparse(src)
+    page_host = (urlparse(page.url).hostname or "").lower()
+    image_host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not page_host:
+        return ""
+    # Only fetch images from MX's own host family; do not send browser cookies
+    # to arbitrary hosts embedded in message content.
+    if image_host != page_host and not image_host.endswith(".hhhuu.com"):
+        return ""
+    try:
+        response = page.request.get(src, timeout=8000)
+        if not response.ok or not response.headers.get("content-type", "").lower().startswith("image/"):
+            return ""
+        return ocr_image_bytes(response.body(), executable=executable)
+    except Exception:
+        return ""
+
+
 def extract_messages(page, room):
     items = []
+    ocr_executable = find_tesseract()
     for row in page.query_selector_all(SEL_MSG):
         text = "\n".join(element.inner_text().strip() for element in row.query_selector_all(SEL_TEXT)).strip()
         media = []
+        ocr_texts = []
         for element in row.query_selector_all(SEL_IMAGE):
             src = element.evaluate("e => e.currentSrc || e.getAttribute('src') || ''")
             if src:
-                media.append({"type": "image", "src": urljoin(page.url, src)})
+                full_src = urljoin(page.url, src)
+                media.append({"type": "image", "src": full_src})
+                if ocr_executable and len(ocr_texts) < 3:
+                    recognized = _ocr_image_from_page(page, full_src, ocr_executable)
+                    if recognized:
+                        ocr_texts.append(recognized)
         for element in row.query_selector_all(".bubble video, .bubble audio, .bubble a[href]"):
             tag = element.evaluate("e => e.tagName.toLowerCase()")
             src = element.evaluate("e => e.currentSrc || e.src || e.href || ''")
@@ -287,8 +314,11 @@ def extract_messages(page, room):
                 media.append({"type": {"video": "video", "audio": "audio", "a": "link"}[tag], "src": urljoin(page.url, src)})
         if not text and not media:
             continue
-        # 纯图片也保留；提示文字不是 OCR 结果，图片地址在 media 内。
-        content = text or "[媒体消息无正文，待解析]"
+        if ocr_texts:
+            content = (text + "\n" if text else "") + "[图片文字 OCR]\n" + "\n".join(ocr_texts)
+        else:
+            # Pure image messages remain in the local outbox even when OCR is unavailable.
+            content = text or "[媒体消息无正文，待解析]"
         raw_time = sender = ""
         meta = row.query_selector(SEL_META)
         if meta:
@@ -298,7 +328,10 @@ def extract_messages(page, room):
             sender = (meta.inner_text() or "").split("\n")[0].strip()
         published_at, rule = parse_time(raw_time)
         types = {item["type"] for item in media}
-        parse_status = "ocr_pending" if "image" in types else ("link_pending" if types == {"link"} else ("attachment_pending" if media else "text_ok"))
+        if "image" in types:
+            parse_status = "ocr_done" if ocr_texts else "ocr_pending"
+        else:
+            parse_status = "link_pending" if types == {"link"} else ("attachment_pending" if media else "text_ok")
         fingerprint = content if not media else content + json.dumps(media, ensure_ascii=False, sort_keys=True)
         key = "%s|%s|%s" % (room["room_key"], published_at or ("raw:" + (raw_time or "null")), hashlib.md5(fingerprint.encode("utf-8")).hexdigest())
         items.append({
