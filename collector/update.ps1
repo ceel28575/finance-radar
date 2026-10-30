@@ -1,7 +1,8 @@
+param([string]$TargetCollectorRoot = $PSScriptRoot)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$collectorRoot = $PSScriptRoot
+$collectorRoot = [IO.Path]::GetFullPath($TargetCollectorRoot)
 $repoRoot = Split-Path -Parent $collectorRoot
 $repo = 'ceel28575/finance-radar'
 $archiveUrl = 'https://github.com/ceel28575/finance-radar/archive/refs/heads/main.zip'
