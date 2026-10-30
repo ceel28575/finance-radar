@@ -16,6 +16,8 @@ def export_snapshot():
         days = {}
         for key, raw in conn.execute("SELECT source_key,payload FROM outbox"):
             x = json.loads(raw)
+            # The local history cursor is an implementation detail, not cloud data.
+            x.pop("history_key", None)
             stamp = x.get("published_at")
             if not stamp:
                 continue
