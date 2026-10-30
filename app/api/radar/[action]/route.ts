@@ -51,6 +51,11 @@ export async function POST(req:Request){
     'ai_pipeline',JSON.stringify({...batch.ai_status,at:now})
    ));
   }
+  if(batch.collector_status){
+   statements.push(db().prepare('INSERT INTO radar_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(
+    'collector_scan',JSON.stringify({...batch.collector_status,at:now})
+   ));
+  }
   await db().batch(statements);
   return json({
    ok:true,
@@ -58,6 +63,7 @@ export async function POST(req:Request){
    filtered:batch.filtered,
    reports:batch.reports.length,
    ai_status_saved:!!batch.ai_status,
+   collector_status_saved:!!batch.collector_status,
    received_at:now
   });
  }catch(e){console.error('radar ingest failed',e instanceof Error?e.name:'Error');return json({error:'保存失败；本机数据保留，请稍后重试'},503)}
