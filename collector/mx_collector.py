@@ -395,6 +395,9 @@ def _ocr_image_from_page(page, src, executable):
         return ""
     try:
         response = page.request.get(src, timeout=8000)
+        final_host = (urlparse(response.url).hostname or "").lower()
+        if final_host != page_host and not final_host.endswith(".hhhuu.com"):
+            return ""
         if not response.ok or not response.headers.get("content-type", "").lower().startswith("image/"):
             return ""
         content_length = response.headers.get("content-length")
