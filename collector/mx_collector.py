@@ -648,7 +648,6 @@ def collect_loop(conn):
                     # One shared budget across the whole sweep prevents 100+ rooms
                     # from triggering thousands of CPU OCR calls in a single round.
                     loaded_all = load_history(page, loaded_all, conn, room, ocr_budget, history_cursor)
-                    enqueue(conn, extract_messages(page, room, conn, ocr_budget))
                     conn.execute(
                         "INSERT INTO rooms (room_key,name,loaded_all,is_dup,updated_at) VALUES (?,?,?,?,?) "
                         "ON CONFLICT(room_key) DO UPDATE SET name=excluded.name,loaded_all=excluded.loaded_all,"
