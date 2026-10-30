@@ -291,24 +291,21 @@ def _ocr_image_from_page(page, src, executable):
         return ""
 
 
-def extract_messages(page, room):
+def extract_messages(page, room, conn=None, ocr_budget=None):
     items = []
     ocr_executable = find_tesseract()
-    ocr_budget = 8
+    if ocr_budget is None:
+        ocr_budget = [8]
     for row in page.query_selector_all(SEL_MSG):
         text = "\n".join(element.inner_text().strip() for element in row.query_selector_all(SEL_TEXT)).strip()
         media = []
-        ocr_texts = []
+        image_sources = []
         for element in row.query_selector_all(SEL_IMAGE):
             src = element.evaluate("e => e.currentSrc || e.getAttribute('src') || ''")
             if src:
                 full_src = urljoin(page.url, src)
+                image_sources.append(full_src)
                 media.append({"type": "image", "src": full_src})
-                if ocr_executable and ocr_budget > 0 and len(ocr_texts) < 3:
-                    ocr_budget -= 1
-                    recognized = _ocr_image_from_page(page, full_src, ocr_executable)
-                    if recognized:
-                        ocr_texts.append(recognized)
         for element in row.query_selector_all(".bubble video, .bubble audio, .bubble a[href]"):
             tag = element.evaluate("e => e.tagName.toLowerCase()")
             src = element.evaluate("e => e.currentSrc || e.src || e.href || ''")
@@ -316,11 +313,7 @@ def extract_messages(page, room):
                 media.append({"type": {"video": "video", "audio": "audio", "a": "link"}[tag], "src": urljoin(page.url, src)})
         if not text and not media:
             continue
-        if ocr_texts:
-            content = (text + "\n" if text else "") + "[图片文字 OCR]\n" + "\n".join(ocr_texts)
-        else:
-            # Pure image messages remain in the local outbox even when OCR is unavailable.
-            content = text or "[媒体消息无正文，待解析]"
+
         raw_time = sender = ""
         meta = row.query_selector(SEL_META)
         if meta:
@@ -329,16 +322,52 @@ def extract_messages(page, room):
                 raw_time = (time_element.get_attribute("datetime") or time_element.inner_text() or "").strip()
             sender = (meta.inner_text() or "").split("\n")[0].strip()
         published_at, rule = parse_time(raw_time)
-        types = {item["type"] for item in media}
-        if "image" in types:
-            parse_status = "ocr_done" if ocr_texts else "ocr_pending"
-        else:
-            parse_status = "link_pending" if types == {"link"} else ("attachment_pending" if media else "text_ok")
-        # Keep message identity independent of OCR output so a later successful
-        # OCR pass updates the existing row instead of creating a duplicate.
+
+        # Keep the same source key before/after OCR; OCR text is content, not identity.
         identity_content = text or "[媒体消息无正文，待解析]"
         fingerprint = identity_content if not media else identity_content + json.dumps(media, ensure_ascii=False, sort_keys=True)
-        key = "%s|%s|%s" % (room["room_key"], published_at or ("raw:" + (raw_time or "null")), hashlib.md5(fingerprint.encode("utf-8")).hexdigest())
+        key = "%s|%s|%s" % (
+            room["room_key"],
+            published_at or ("raw:" + (raw_time or "null")),
+            hashlib.md5(fingerprint.encode("utf-8")).hexdigest(),
+        )
+
+        previous_content = None
+        previous_parse_status = ""
+        if conn is not None:
+            previous = conn.execute("SELECT payload FROM outbox WHERE source_key=?", (key,)).fetchone()
+            if previous:
+                try:
+                    previous_payload = json.loads(previous[0])
+                    previous_parse_status = str(previous_payload.get("parse_status") or "")
+                    if previous_parse_status == "ocr_done":
+                        previous_content = str(previous_payload.get("content") or "")
+                except (TypeError, ValueError):
+                    pass
+
+        ocr_texts = []
+        if previous_content is not None:
+            content = previous_content
+        else:
+            if ocr_executable and ocr_budget and ocr_budget[0] > 0:
+                for image_src in image_sources:
+                    if ocr_budget[0] <= 0 or len(ocr_texts) >= 3:
+                        break
+                    ocr_budget[0] -= 1
+                    recognized = _ocr_image_from_page(page, image_src, ocr_executable)
+                    if recognized:
+                        ocr_texts.append(recognized)
+            if ocr_texts:
+                content = (text + "\n" if text else "") + "[图片文字 OCR]\n" + "\n".join(ocr_texts)
+            else:
+                # Pure image messages remain in the local outbox even when OCR is unavailable.
+                content = identity_content
+
+        types = {item["type"] for item in media}
+        if "image" in types:
+            parse_status = "ocr_done" if previous_content is not None or ocr_texts else "ocr_pending"
+        else:
+            parse_status = "link_pending" if types == {"link"} else ("attachment_pending" if media else "text_ok")
         items.append({
             "item_type": "chat", "source_key": key, "source": "MX", "room": room["name"],
             "room_key": room["room_key"], "author": sender[:80], "title": content[:60],
@@ -347,11 +376,12 @@ def extract_messages(page, room):
         })
     return items
 
-
-def load_history(page, loaded_all, conn, room):
+def load_history(page, loaded_all, conn, room, ocr_budget=None):
     # 每次入房间都补查，不能因过去追平而忽略断线期间的消息。
     # 每页先持久化，下一页失败也不丢已经读取的正文。
-    enqueue(conn, extract_messages(page, room))
+    if ocr_budget is None:
+        ocr_budget = [24]
+    enqueue(conn, extract_messages(page, room, conn, ocr_budget))
     for _ in range(MAX_LOAD_MORE):
         button = page.get_by_text("加载更早", exact=True)
         if button.count() == 0:
@@ -364,7 +394,7 @@ def load_history(page, loaded_all, conn, room):
         for _ in range(20):
             page.wait_for_timeout(500)
             if page.locator(SEL_MSG).count() > before:
-                enqueue(conn, extract_messages(page, room))
+                enqueue(conn, extract_messages(page, room, conn, ocr_budget))
                 break
         else:
             return False  # 无增长可能是网络慢，不宣称历史已追平
@@ -417,8 +447,9 @@ def collect_loop(conn):
                         continue
                     consecutive_failures = 0
                     page.wait_for_timeout(1200)
-                    loaded_all = load_history(page, loaded_all, conn, room)
-                    enqueue(conn, extract_messages(page, room))
+                    ocr_budget = [24]  # Bound local OCR work per room scan; completed images are cached in SQLite.
+                    loaded_all = load_history(page, loaded_all, conn, room, ocr_budget)
+                    enqueue(conn, extract_messages(page, room, conn, ocr_budget))
                     conn.execute("INSERT OR REPLACE INTO rooms (room_key, name, loaded_all, is_dup, updated_at) VALUES (?,?,?,?,?)",
                                  (room["room_key"], room["name"], int(loaded_all), int(room["is_dup"]), now_iso()))
                     conn.commit()
