@@ -23,6 +23,20 @@ jobs:
       - name: Parse active dashboard JavaScript
         run: node --input-type=module -e "import {readFileSync} from 'node:fs'; const html=readFileSync('dashboard.html','utf8'); const scripts=[...html.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi)]; if(!scripts.length) throw new Error('No inline scripts found'); scripts.forEach((m,i)=>new Function(m[1])); console.log('Parsed '+scripts.length+' dashboard script block(s)');"
 
+  site-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+      - name: Install pnpm
+        run: npm install --global pnpm@11.25.0
+      - name: Install site dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build private website and API routes
+        run: pnpm build
+
   windows-updater-syntax:
     runs-on: windows-latest
     steps:
