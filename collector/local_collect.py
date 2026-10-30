@@ -27,14 +27,39 @@ def export_snapshot():
             x["id"] = key
             x["source"] = x.get("room") or x.get("room_name") or x.get("source") or "MX"
             days.setdefault(day, []).append(x)
+        reports_by_day = {}
+        try:
+            for raw_day, raw_report in conn.execute(
+                "SELECT date,payload FROM ai_reports ORDER BY generated_at"
+            ):
+                try:
+                    reports_by_day.setdefault(raw_day, []).append(json.loads(raw_report))
+                except (ValueError, TypeError):
+                    continue
+        except Exception:
+            # AI tables may not exist during the very first collector boot.
+            pass
         folder = ROOT / "exports"
         folder.mkdir(exist_ok=True)
-        for day, items in days.items():
+        for day in set(days) | set(reports_by_day):
             target = folder / (day + ".json")
             tmp = target.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"items":items,"reports":[]},ensure_ascii=False),encoding="utf-8")
-            os.replace(tmp,target)
-        print("Local export complete:", sum(map(len,days.values())), "items", flush=True)
+            tmp.write_text(
+                json.dumps(
+                    {"items": days.get(day, []), "reports": reports_by_day.get(day, [])},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            os.replace(tmp, target)
+        print(
+            "Local export complete:",
+            sum(map(len, days.values())),
+            "items and",
+            sum(map(len, reports_by_day.values())),
+            "AI reports",
+            flush=True,
+        )
     finally:
         conn.close()
 
