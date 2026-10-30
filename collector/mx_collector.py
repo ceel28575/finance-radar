@@ -530,6 +530,7 @@ def _oldest_message_key(items):
     dated = [
         item for item in items
         if _history_message_key(item) and item.get("published_at")
+        and item.get("time_rule") not in ("collected_at_fallback", "hm_today_or_yesterday")
     ]
     if dated:
         return _history_message_key(min(dated, key=lambda item: str(item["published_at"])))
