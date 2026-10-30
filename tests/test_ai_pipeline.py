@@ -57,6 +57,7 @@ class AIPipelineTests(unittest.TestCase):
         self.assertEqual(_clean_company_name("沪电股份（002463.SZ）"), "沪电股份")
         self.assertEqual(_clean_company_name("002463.SZ 沪电股份"), "沪电股份")
         self.assertEqual(_clean_company_name("沪电股份002463"), "沪电股份")
+        self.assertEqual(_clean_company_name("沪电股份.SZ"), "沪电股份")
         stocks = _normalize_stocks([{
             "name": "沪电股份（002463.SZ）", "direction": "bull",
             "reason": "原文支持", "evidence_ids": ["source-1"],
