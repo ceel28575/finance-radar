@@ -233,6 +233,8 @@ def _source_view(source_key, item):
         "room": str(item.get("room") or item.get("source") or "MX")[:100],
         "author": str(item.get("author") or "")[:80],
         "published_at": str(item.get("published_at") or "")[:40],
+        "raw_time": str(item.get("raw_time") or "")[:60],
+        "time_rule": str(item.get("time_rule") or "")[:40],
         "content": str(item.get("content") or "")[:900],
         "trade_action_signals": _trade_action_signals(item.get("content")),
         "media_types": sorted({str(x.get("type")) for x in media if isinstance(x, dict) and x.get("type")}),
@@ -267,7 +269,9 @@ def _call_qwen(items):
             "room": str(item.get("room") or item.get("source") or "MX")[:80],
             "author": str(item.get("author") or "")[:60],
             "published_at": str(item.get("published_at") or "")[:40],
-            "content": str(item.get("content") or "")[:1400],
+            "raw_time": str(item.get("raw_time") or "")[:60],
+            "time_rule": str(item.get("time_rule") or "")[:40],
+            "content": str(item.get("content") or "")[:900],
             "trade_action_signals": _trade_action_signals(item.get("content")),
             "has_images": any(
                 isinstance(media, dict) and media.get("type") == "image"
@@ -283,7 +287,7 @@ def _call_qwen(items):
         '格式：{"items":[{"id":"原样ID","relevance":0,"category":"行业/公司/宏观/市场/无关",'
         '"companies":[],"stance":"bullish|bearish|neutral|mixed",'
         '"summary":"一句话摘要","facts":[],"catalysts":[],"risks":[]}] }。'
-        "每条输入必须返回且 id 必须逐字一致。relevance 为 0 到 5；无关信息为 0。"
+        "每条输入必须返回且 id 必须逐字一致。relevance 为 0 到 5；无关信息为 0。raw_time/time_rule 用于判断时间可信度；采集时间回退或时分推算不能当作精确发布时间。"
         "交易方向按原文操作意图判断，不要求出现“看多/看空”字样：针对具体标的出现“买/买入/低吸”标 bullish；出现“高抛/卖/卖出”标 bearish。\n"
         "识别否定表达（如不要买、不建议买、不卖、暂不卖）时不要按关键词机械归类；“高抛低吸”等同句双向策略标 mixed，除非上下文能明确对应到具体标的的单一操作。\n"
         "“买方/卖方/买卖双方”等非操作建议不作为交易信号；公司名称与动作必须能从原文对应。证据不足用 neutral。"
@@ -553,7 +557,7 @@ def _call_doubao(api_key, today, generated_at, analyses, previous_report, action
         "你是A股财经研究分析师。只能根据提供的原始资讯和本地千问提取结果进行研判。"
         "本地千问结果只是线索，必须回看原文；不能把未经证实的传闻写成事实。"
         "不允许虚构股价、订单、客户、产能、业绩数字或公告。证据不足时明确写证据不足。"
-        "指数看多概率是主观情景判断，不是统计胜率。股票名称只写公司中文名称，不写六位代码。"
+        "指数看多概率是主观情景判断，不是统计胜率。股票名称只写公司中文名称，不写六位代码。原文时间若标记为采集时间回退或时分推算，不得将其描述成精确发布时间。"
         "股票池按作者对具体标的的操作意图归类，不要求原文出现“看多/看空”：出现“买/买入/低吸”归看多 bull；出现“高抛/卖/卖出”归看空 bear。"
         "必须把动作和对应公司匹配；否定表达（不要买、不建议买、不卖、暂不卖等）不能按关键词机械归类；“高抛低吸”这类同句双向策略若无法拆分到具体标的操作则不入单边池。"
         "“买方/卖方/买卖双方”等非交易建议不算信号。若同一标的多条消息方向冲突，优先采用最新明确操作，并在 change 中说明。"
