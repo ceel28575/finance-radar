@@ -117,6 +117,11 @@ class MXRoomIdentityTests(unittest.TestCase):
             {"source_key": "old", "published_at": "2026-10-30T08:00:00+00:00"},
         ]
         self.assertEqual(_oldest_message_key(items), "old")
+        uncertain = [
+            {"source_key": "dom-oldest", "published_at": "2026-10-30T10:00:00+00:00", "time_rule": "collected_at_fallback"},
+            {"source_key": "dom-newer", "published_at": "2026-10-30T08:00:00+00:00", "time_rule": "explicit_iso"},
+        ]
+        self.assertEqual(_oldest_message_key(uncertain), "dom-newer")
 
     def test_duplicate_room_keys_survive_dom_reordering(self):
         first_scan = [
