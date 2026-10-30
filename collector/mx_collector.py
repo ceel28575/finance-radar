@@ -252,11 +252,8 @@ def discover_rooms(page):
             "stable_id": str(entry.get("stable_id") or "")[:180],
         })
     counts = {}
-    stable_counts = {}
     for room in rooms:
         counts[room["name"]] = counts.get(room["name"], 0) + 1
-        if room["stable_id"]:
-            stable_counts[(room["name"], room["stable_id"])] = stable_counts.get((room["name"], room["stable_id"]), 0) + 1
     for room in rooms:
         if counts[room["name"]] > 1:
             room["is_dup"] = True
