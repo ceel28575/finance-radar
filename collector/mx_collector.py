@@ -103,6 +103,7 @@ def db():
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("CREATE TABLE IF NOT EXISTS outbox (source_key TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT, sent_at TEXT, fail_reason TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS rooms (room_key TEXT PRIMARY KEY, name TEXT, loaded_all INTEGER NOT NULL DEFAULT 0, is_dup INTEGER NOT NULL DEFAULT 0, updated_at TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS room_identity (identity_key TEXT PRIMARY KEY, room_key TEXT NOT NULL, room_name TEXT NOT NULL, stable_id TEXT NOT NULL, updated_at TEXT NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS runtime_status (scope TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.commit()
     return conn
@@ -220,7 +221,7 @@ SEL_TEXT = ".bubble > .text-part"
 SEL_IMAGE = ".bubble button.image-part img"
 
 
-def discover_rooms(page):
+def discover_rooms(page, conn=None):
     rooms = []
     # Snapshot primitive values only; room DOM nodes may be replaced after each click.
     snapshot = page.locator(SEL_ROOM).evaluate_all(
@@ -262,8 +263,48 @@ def discover_rooms(page):
             room["room_key"] = "%s#%d" % (room["name"], room["dom_index"])
     if counts.get("到期待上新", 0):
         print("本轮发现“到期待上新”%d 个；重名房间按 DOM 序号临时区分，稳定映射仍待核实。" % counts["到期待上新"])
+    if conn is not None:
+        apply_room_identity(conn, rooms)
     rooms.sort(key=lambda room: -(room["latest_ms"] or 0))
     return rooms
+
+
+def apply_room_identity(conn, rooms):
+    """Persist duplicate-room identity across MX list reordering when DOM exposes an ID."""
+    stable_counts = {}
+    for room in rooms:
+        stable_id = str(room.get("stable_id") or "").strip()
+        if stable_id:
+            pair = (room["name"], stable_id)
+            stable_counts[pair] = stable_counts.get(pair, 0) + 1
+
+    for room in rooms:
+        stable_id = str(room.get("stable_id") or "").strip()
+        # An ID repeated by multiple rows is not a unique identity; keep the
+        # verified DOM-position fallback rather than merging two conversations.
+        if not stable_id or stable_counts.get((room["name"], stable_id)) != 1:
+            continue
+        identity_key = hashlib.sha256(
+            (room["name"] + "\\0" + stable_id).encode("utf-8")
+        ).hexdigest()
+        previous = conn.execute(
+            "SELECT room_key FROM room_identity WHERE identity_key=?",
+            (identity_key,),
+        ).fetchone()
+        if previous:
+            room["room_key"] = previous[0]
+            conn.execute(
+                "UPDATE room_identity SET updated_at=? WHERE identity_key=?",
+                (now_iso(), identity_key),
+            )
+        else:
+            # First observation adopts the legacy key, so the existing SQLite
+            # history/outbox is not duplicated by this upgrade.
+            conn.execute(
+                "INSERT INTO room_identity(identity_key,room_key,room_name,stable_id,updated_at) VALUES(?,?,?,?,?)",
+                (identity_key, room["room_key"], room["name"], stable_id, now_iso()),
+            )
+    conn.commit()
 
 
 def click_room(page, room):
@@ -477,7 +518,7 @@ def collect_loop(conn):
             last_error = ""
             consecutive_failures = 0
             try:
-                rooms = discover_rooms(page)
+                rooms = discover_rooms(page, conn)
                 total = len(rooms)
                 unmapped = 0
                 duplicates = sum(1 for room in rooms if room["is_dup"])
