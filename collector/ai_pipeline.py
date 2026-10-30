@@ -28,6 +28,7 @@ MAX_QWEN_ITEMS = 12
 MAX_DAILY_CONTEXT = 40
 MAX_ACTION_SCAN = 3000
 PROMPT_VERSION = "trade-actions-v3"
+API_KEY_ERROR = ""
 
 
 class AIError(RuntimeError):
@@ -75,6 +76,8 @@ def ensure_ai_schema(conn):
 
 
 def load_api_key():
+    global API_KEY_ERROR
+    API_KEY_ERROR = ""
     key = os.environ.get("ARK_API_KEY", "").strip()
     if not key:
         try:
@@ -88,6 +91,7 @@ def load_api_key():
     try:
         _verify_doubao_key(key)
     except AIError as error:
+        API_KEY_ERROR = str(error)[:240]
         print("豆包 API Key 启动验证失败：%s" % error, flush=True)
         return ""
     print("豆包 API Key 启动验证成功；后续研判复用同一认证方式。", flush=True)
@@ -773,7 +777,9 @@ def run_ai_cycle(root, api_key):
         next_pool = _get_pool(conn, next_day)
 
         if not analyses and not action_candidates:
-            if after_close:
+            empty_digest = "empty:" + PROMPT_VERSION
+            already_reported_empty = _state_get(conn, "report_digest:" + today) == empty_digest
+            if after_close and not already_reported_empty:
                 if _get_pool(conn, today) is None:
                     _save_pool_once(conn, today, [], generated_at)
                 if next_pool is None:
@@ -794,10 +800,11 @@ def run_ai_cycle(root, api_key):
                     empty_report, date=next_day, title="次日预备股票池",
                     summary="根据 " + today + " 的完整资讯处理结果，暂未发现可与具体公司对应的明确交易动作。",
                 ))
+                _state_set(conn, "report_digest:" + today, empty_digest)
             _status(conn, "ready", "已完成文字资讯处理；当前没有足够证据识别明确的个股买卖动作。", generated_at)
             return {
                 "status": "ready", "analysed": len(all_analyses),
-                "report": after_close, "pending_remaining": 0,
+                "report": after_close and not already_reported_empty, "pending_remaining": 0,
             }
 
         digest_source = json.dumps(
@@ -891,7 +898,11 @@ def ai_worker(stop, root, api_key):
         try:
             conn = sqlite3.connect(str(Path(root) / "mx_outbox.db"), timeout=10)
             ensure_ai_schema(conn)
-            _status(conn, "disabled", "未提供豆包 API Key；AI 分析未启动，MX 采集与同步继续。")
+            _status(
+                conn,
+                "degraded" if API_KEY_ERROR else "disabled",
+                API_KEY_ERROR or "未提供豆包 API Key；AI 分析未启动，MX 采集与同步继续。",
+            )
             conn.close()
         except sqlite3.Error:
             pass
