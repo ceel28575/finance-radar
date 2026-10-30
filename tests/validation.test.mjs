@@ -18,3 +18,11 @@ test('AI pipeline status is validated and retained',()=>{
 test('invalid AI pipeline status is rejected',()=>{
  assert.throws(()=>normalizeAIStatus({status:'unknown',message:'x',last_run_at:'bad'}));
 });
+
+test('blocked keywords in unrelated message text are not treated as blocked sources',()=>{
+ const x=normalizeBatch({items:[{...item,content:'其他房间正在讨论奇幻团课和 qmxp2077'}]});
+ assert.equal(x.items.length,1);
+});
+test('blocked room names remain excluded',()=>{
+ assert.equal(normalizeBatch({items:[{...item,room:'奇幻团课'}]}).items.length,0);
+});
