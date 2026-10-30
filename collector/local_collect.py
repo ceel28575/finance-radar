@@ -23,7 +23,10 @@ def export_snapshot():
                 day = datetime.fromisoformat(stamp.replace("Z","+00:00")).astimezone(CST).date().isoformat()
             except (ValueError, TypeError):
                 continue
-            if any(t in json.dumps(x,ensure_ascii=False).lower() for t in ["奇幻团课","qmxp2077"]):
+            blocked_source = " ".join(
+                str(x.get(field) or "") for field in ("source", "room", "author", "room_key")
+            ).lower()
+            if "奇幻团课" in blocked_source or "qmxp2077" in blocked_source:
                 continue
             x["id"] = key
             x["source"] = x.get("room") or x.get("room_name") or x.get("source") or "MX"
