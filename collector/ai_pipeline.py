@@ -723,15 +723,17 @@ def _action_based_candidates(analyses):
 
 
 def _merge_action_candidates(model_stocks, action_candidates):
-    """Explicit source actions take precedence over a model's opposite label."""
-    result = [
-        dict(row) for row in (model_stocks or [])
+    """Keep every evidence-backed explicit action ahead of model-only candidates."""
+    actions = [
+        dict(row) for row in (action_candidates or [])
         if isinstance(row, dict) and row.get("name")
     ]
-    for candidate in action_candidates or []:
-        result = [row for row in result if row.get("name") != candidate["name"]]
-        result.append(dict(candidate))
-    return result[:40]
+    action_names = {row["name"] for row in actions}
+    model_only = [
+        dict(row) for row in (model_stocks or [])
+        if isinstance(row, dict) and row.get("name") not in action_names
+    ]
+    return (actions + model_only)[:40]
 
 
 def worker_delay(result=None, failed=False, now=None):
