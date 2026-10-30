@@ -46,7 +46,19 @@ export async function POST(req:Request){
   for(const r of batch.reports)statements.push(db().prepare('INSERT INTO radar_reports(id,day,generated_at,payload) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').bind(r.date+'|'+r.generated_at,r.date,r.generated_at,JSON.stringify(r)));
   const status={at:now,accepted:batch.items.length,filtered:batch.filtered,client:body.client==='collector'?'collector':'import'};
   statements.push(db().prepare('INSERT INTO radar_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(status.client==='collector'?'collector':'last_import',JSON.stringify(status)));
+  if(batch.ai_status){
+   statements.push(db().prepare('INSERT INTO radar_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(
+    'ai_pipeline',JSON.stringify({...batch.ai_status,at:now})
+   ));
+  }
   await db().batch(statements);
-  return json({ok:true,accepted_ids:batch.items.map((x:any)=>x.id),filtered:batch.filtered,reports:batch.reports.length,received_at:now});
+  return json({
+   ok:true,
+   accepted_ids:batch.items.map((x:any)=>x.id),
+   filtered:batch.filtered,
+   reports:batch.reports.length,
+   ai_status_saved:!!batch.ai_status,
+   received_at:now
+  });
  }catch(e){console.error('radar ingest failed',e instanceof Error?e.name:'Error');return json({error:'保存失败；本机数据保留，请稍后重试'},503)}
 }
