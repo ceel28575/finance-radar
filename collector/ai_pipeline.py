@@ -714,10 +714,14 @@ def _action_based_candidates(analyses):
             phrases = list(dict.fromkeys(signal["phrase"] for signal in signals))
             phrase_text = "、".join(phrases)
             published_at = str(source.get("published_at") or "")
+            try:
+                relevance = max(0, min(5, int(float(local.get("relevance", 0) or 0))))
+            except (TypeError, ValueError):
+                relevance = 0
             candidate = {
                 "name": name,
                 "direction": direction,
-                "score": max(60, min(85, 60 + 5 * int(local.get("relevance", 0) or 0))),
+                "score": max(60, min(85, 60 + 5 * relevance)),
                 "sector": "待归类",
                 "reason": "原文明确出现操作词“%s”，按交易意图规则归入%s。原文片段：%s" % (
                     phrase_text, "看多" if direction == "bull" else "看空", clause[:260]
