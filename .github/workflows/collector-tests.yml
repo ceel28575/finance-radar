@@ -20,3 +20,19 @@ jobs:
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Run validation tests
         run: node --test tests/validation.test.mjs
+
+  windows-updater-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Windows updater
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'collector/update.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List
+            exit 1
+          }
+          Write-Host 'PowerShell updater syntax OK'
