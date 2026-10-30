@@ -123,7 +123,8 @@ try {
     Write-Host ("本机数据备份位置：" + $backupRoot)
     Write-Host 'MX 登录档案、历史数据库、同步配置和 Ollama 模型均未删除。'
     Write-Step '启动新版采集器……'
-    Start-Process -FilePath (Join-Path $collectorRoot 'start.bat') -WorkingDirectory $collectorRoot
+    $startBat = Join-Path $collectorRoot 'start.bat'
+    Start-Process -FilePath $env:ComSpec -ArgumentList @('/c', ('"' + $startBat + '"')) -WorkingDirectory $collectorRoot
     Write-Host '新版采集器已打开独立窗口。请在新窗口按提示输入豆包 API Key（如需），并确认 MX 页面已登录。' -ForegroundColor Green
 }
 catch {
