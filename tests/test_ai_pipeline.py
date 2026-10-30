@@ -117,6 +117,21 @@ class AIPipelineTests(unittest.TestCase):
         self.assertEqual(merged[0]["direction"], "bear")
         self.assertEqual(merged[0]["evidence_ids"], ["new"])
 
+    def test_explicit_action_candidates_are_not_crowded_out_by_model_rows(self):
+        model_rows = [
+            {"name": "模型公司%d" % i, "direction": "bull", "score": 50}
+            for i in range(40)
+        ]
+        action_rows = [
+            {"name": "明确动作公司%d" % i, "direction": "bull", "score": 80, "evidence_ids": ["e%d" % i]}
+            for i in range(25)
+        ]
+        merged = _merge_action_candidates(model_rows, action_rows)
+        names = {row["name"] for row in merged}
+        self.assertEqual(len(merged), 40)
+        self.assertTrue(all(row["name"] in names for row in action_rows))
+        self.assertEqual(sum(row["name"].startswith("模型公司") for row in merged), 15)
+
     def test_backlog_is_processed_quickly_and_errors_retry(self):
         self.assertEqual(worker_delay({"pending_remaining": 80}), 5)
         self.assertEqual(worker_delay({"pending_remaining": 0}, failed=True), 120)
