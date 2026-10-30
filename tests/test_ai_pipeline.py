@@ -1,5 +1,9 @@
 import sqlite3
 import unittest
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'collector'))
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
