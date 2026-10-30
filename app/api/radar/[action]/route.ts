@@ -16,7 +16,8 @@ export async function GET(req:Request){
  if(action==='status'){
   const days=await db().prepare('SELECT day,COUNT(*) count FROM radar_items GROUP BY day ORDER BY day DESC LIMIT 366').all();
   const states=await db().prepare('SELECT key,value FROM radar_state').all<{key:string,value:string}>();
-  return json({days:days.results,state:Object.fromEntries(states.results.map(x=>[x.key,JSON.parse(x.value)])),ai_configured:false,ocr_configured:false});
+  const ai=await db().prepare('SELECT COUNT(*) AS count,MAX(generated_at) AS latest FROM radar_reports').first<{count:number,latest:string|null}>();
+  return json({days:days.results,state:Object.fromEntries(states.results.map(x=>[x.key,JSON.parse(x.value)])),ai_configured:Number(ai?.count||0)>0,latest_ai_report:ai?.latest||null,ocr_configured:false});
  }
  if(action==='data'){
   const day=url.searchParams.get('day')||dayOf(new Date().toISOString());if(!/^\d{4}-\d{2}-\d{2}$/.test(day))return json({error:'日期错误'},400);
