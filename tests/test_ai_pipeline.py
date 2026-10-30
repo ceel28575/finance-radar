@@ -53,6 +53,14 @@ class AIPipelineTests(unittest.TestCase):
         self.assertIn(("bull", "低吸", False), compact)
         self.assertIn(("bear", "高抛", False), compact)
 
+    def test_market_flow_and_non_action_phrases_are_not_trade_signals(self):
+        signals = _trade_action_signals(
+            "甲公司买盘增加；乙公司买入价上涨；丙公司买不到；丁公司低吸；"
+            "戊公司卖盘增加；己公司卖不出去；庚公司高抛"
+        )
+        active = [(x["direction"], x["phrase"]) for x in signals if not x["negated"]]
+        self.assertEqual(active, [("bull", "低吸"), ("bear", "高抛")])
+
     def test_action_candidates_map_buy_and_sell_to_the_named_company(self):
         rows = [
             {
