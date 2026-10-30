@@ -4,12 +4,13 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'collector'))
 from cloud_sync import sync_exports,SITE_URL
 class Response:
  status_code=200
- def __init__(self,items,reports=0,ai_status_saved=False):
-  self.items=items;self.reports=reports;self.ai_status_saved=ai_status_saved
+ def __init__(self,items,reports=0,ai_status_saved=False,collector_status_saved=False):
+  self.items=items;self.reports=reports;self.ai_status_saved=ai_status_saved;self.collector_status_saved=collector_status_saved
  def raise_for_status(self):pass
  def json(self):
   return {'ok':True,'accepted_ids':[x['id'] for x in self.items],
-          'reports':self.reports,'ai_status_saved':self.ai_status_saved}
+          'reports':self.reports,'ai_status_saved':self.ai_status_saved,
+          'collector_status_saved':self.collector_status_saved}
 class SyncTests(unittest.TestCase):
  def test_retry_dedupe_and_update(self):
   with tempfile.TemporaryDirectory() as t:
@@ -36,6 +37,21 @@ class SyncTests(unittest.TestCase):
    self.assertEqual(sync_exports(root,post=ok),0)
    self.assertEqual(len(calls),2)
    self.assertEqual(calls[0]['reports'][0]['date'],'2026-10-30')
+ def test_collector_scan_status_sync_and_dedupe(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'exports').mkdir()
+   (root/'cloud-config.json').write_text(json.dumps({'site_url':SITE_URL,'site_token':'test-fixture-not-a-real-secret'}))
+   scan={'status':'collecting','stage':'scanning','updated_at':'2026-10-30T15:00:00+08:00','rooms_total':135,'rooms_done':72,'backlog':63,'rooms_unmapped':1,'rooms_duplicate':6}
+   (root/'exports/2026-10-30.json').write_text(json.dumps({'items':[],'reports':[],'collector_status':scan}))
+   calls=[]
+   def ok(url,**kw):
+    calls.append(kw['json'])
+    return Response(kw['json'].get('items',[]),len(kw['json'].get('reports',[])),collector_status_saved=bool(kw['json'].get('collector_status')))
+   self.assertEqual(sync_exports(root,post=ok),1)
+   self.assertEqual(sync_exports(root,post=ok),0)
+   self.assertEqual(calls[0]['collector_status']['rooms_done'],72)
+   self.assertEqual(calls[1]['items'],[])
+
  def test_source_items_upload_before_reports(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t);(root/'exports').mkdir()
