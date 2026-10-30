@@ -41,6 +41,24 @@ class MXRoomIdentityTests(unittest.TestCase):
         saved = self.conn.execute("SELECT room_key FROM room_identity").fetchone()[0]
         self.assertEqual(saved, "重复房间#3")
 
+    def test_room_rename_keeps_the_existing_identity_key(self):
+        first = {"name": "旧房间名", "room_key": "旧房间名#1", "dom_index": 1, "stable_id": "data-room-id:303"}
+        apply_room_identity(self.conn, [first])
+        renamed = {"name": "新房间名", "room_key": "新房间名#1", "dom_index": 1, "stable_id": "data-room-id:303"}
+        apply_room_identity(self.conn, [renamed])
+        self.assertEqual(renamed["room_key"], "旧房间名#1")
+        saved_name = self.conn.execute("SELECT room_name FROM room_identity").fetchone()[0]
+        self.assertEqual(saved_name, "新房间名")
+
+    def test_same_stable_id_on_different_rows_is_not_merged(self):
+        rooms = [
+            {"name": "甲房间", "room_key": "甲房间", "dom_index": 1, "stable_id": "data-id:shared"},
+            {"name": "乙房间", "room_key": "乙房间", "dom_index": 2, "stable_id": "data-id:shared"},
+        ]
+        apply_room_identity(self.conn, rooms)
+        self.assertEqual([x["room_key"] for x in rooms], ["甲房间", "乙房间"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM room_identity").fetchone()[0], 0)
+
     def test_ambiguous_duplicate_dom_ids_keep_dom_fallback(self):
         rooms = [
             {"name": "重复房间", "room_key": "重复房间#1", "dom_index": 1, "stable_id": "data-id:same"},
