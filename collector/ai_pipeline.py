@@ -386,7 +386,7 @@ def _verify_doubao_key(api_key):
             "role": "user",
             "content": [{"type": "input_text", "text": "仅回复 OK"}],
         }],
-        "max_output_tokens": 16,
+        "max_output_tokens": 128,
     }
     response = _curl_post_json(ARK_URL, api_key, payload, timeout=45)
     # A 2xx without usable model output is not a successful preflight.
