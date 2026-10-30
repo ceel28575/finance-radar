@@ -184,12 +184,12 @@ def _trade_action_signals(text):
             if "买卖" in around or compact[end:end + 1] == "方":
                 continue
             if direction == "bull" and re.match(
-                r"(?:盘|方|入(?:价|成本|金额|量|额|资金|订单|需求|意愿)|"
+                r"(?:盘|方|价|成本|金额|量|额|资金|订单|需求|意愿|"
                 r"不(?:到|起|动|出|了|进)|难以|无法)", suffix
             ):
                 continue
             if direction == "bear" and re.match(
-                r"(?:盘|方|出(?:价|成本|金额|量|额|资金|订单|需求|意愿)|"
+                r"(?:盘|方|价|成本|金额|量|额|资金|订单|需求|意愿|"
                 r"不(?:到|起|动|出|了)|难以|无法)", suffix
             ):
                 continue
