@@ -42,6 +42,7 @@ def sync_exports(root, stop=None, post=None):
     try:
         pending = []
         pending_reports = []
+        latest_pools = {}
         latest_ai_status = None
         latest_collector_status = None
         for file in sorted((root / 'exports').glob('????-??-??.json')):
@@ -71,6 +72,23 @@ def sync_exports(root, stop=None, post=None):
                 old = conn.execute('SELECT hash FROM synced WHERE target=? AND id=?', (target,report_id)).fetchone()
                 if not old or old[0] != digest:
                     pending_reports.append((report_id,report,digest))
+            for pool in snapshot.get('pools', []):
+                if not isinstance(pool, dict) or not pool.get('date'):
+                    continue
+                pool_day = str(pool.get('date'))
+                previous_pool = latest_pools.get(pool_day)
+                if previous_pool is None or str(pool.get('generated_at') or '') >= str(previous_pool.get('generated_at') or ''):
+                    latest_pools[pool_day] = pool
+
+        pending_pools = []
+        for pool_day, pool in sorted(latest_pools.items()):
+            pool_id = 'pool:' + pool_day
+            digest = fingerprint(pool)
+            old = conn.execute(
+                'SELECT hash FROM synced WHERE target=? AND id=?', (target, pool_id)
+            ).fetchone()
+            if not old or old[0] != digest:
+                pending_pools.append((pool_id, pool, digest))
 
         pending_status = None
         if latest_ai_status is not None:
@@ -101,7 +119,7 @@ def sync_exports(root, stop=None, post=None):
             batch.append(record);size+=n
         if batch:
             batches.append(batch)
-        if not batches and not pending_reports and pending_status is None and pending_collector_status is None:
+        if not batches and not pending_reports and not pending_pools and pending_status is None and pending_collector_status is None:
             batches=[[]]  # heartbeat, even when there is no new message, report or status
         for batch in batches:
             if stop and stop.is_set():
@@ -149,6 +167,29 @@ def sync_exports(root, stop=None, post=None):
                 )
             conn.commit()
             uploaded += len(report_batch)
+
+        for pool_id, pool, digest in pending_pools:
+            if stop and stop.is_set():
+                return uploaded
+            response = post(
+                SITE_URL + '/api/radar/ingest',
+                headers={'OAI-Sites-Authorization':'Bearer '+config['site_token']},
+                json={'items': [], 'reports': [], 'pools': [pool], 'client':'collector'},
+                timeout=(10,30), allow_redirects=False,
+            )
+            if response.status_code in (401,403) or 300 <= response.status_code < 400:
+                raise SyncError('同步授权已失效，请登录网页重新下载同步配置')
+            response.raise_for_status()
+            result = response.json()
+            if result.get('ok') is not True or result.get('pools_saved') != 1:
+                raise SyncError('每日冻结股票池未获服务确认，保留本机等待重试')
+            conn.execute(
+                'INSERT INTO synced(target,id,hash) VALUES(?,?,?) '
+                'ON CONFLICT(target,id) DO UPDATE SET hash=excluded.hash',
+                (target, pool_id, digest),
+            )
+            conn.commit()
+            uploaded += 1
 
         if pending_status is not None:
             status_id, ai_status, digest = pending_status
@@ -198,7 +239,7 @@ def sync_exports(root, stop=None, post=None):
             conn.commit()
             uploaded += 1
 
-        print('Cloud sync complete:',uploaded,'new/updated items/reports/status',flush=True)
+        print('Cloud sync complete:',uploaded,'new/updated items/reports/pools/status',flush=True)
         return uploaded
     finally:
         conn.close()
