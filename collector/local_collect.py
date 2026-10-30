@@ -13,6 +13,7 @@ from ai_pipeline import ensure_ai_schema, load_api_key, ai_worker
 def export_snapshot():
     conn = db()
     try:
+        ensure_ai_schema(conn)
         days = {}
         for key, raw in conn.execute("SELECT source_key,payload FROM outbox"):
             x = json.loads(raw)
