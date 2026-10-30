@@ -34,6 +34,7 @@ def export_snapshot():
             x["source"] = x.get("room") or x.get("room_name") or x.get("source") or "MX"
             days.setdefault(day, []).append(x)
         reports_by_day = {}
+        pools_by_day = {}
         ai_status = None
         collector_status = None
         try:
@@ -42,6 +43,19 @@ def export_snapshot():
             ):
                 try:
                     reports_by_day.setdefault(raw_day, []).append(json.loads(raw_report))
+                except (ValueError, TypeError):
+                    continue
+            for pool_day, raw_pool in conn.execute(
+                "SELECT pool_date,payload FROM ai_daily_pool ORDER BY pool_date"
+            ):
+                try:
+                    pool = json.loads(raw_pool)
+                    if isinstance(pool, dict) and isinstance(pool.get("stocks"), list):
+                        pools_by_day[pool_day] = {
+                            "date": pool_day,
+                            "generated_at": str(pool.get("generated_at") or ""),
+                            "stocks": pool["stocks"],
+                        }
                 except (ValueError, TypeError):
                     continue
             row = conn.execute("SELECT value FROM ai_state WHERE key='status'").fetchone()
@@ -65,7 +79,7 @@ def export_snapshot():
         folder = ROOT / "exports"
         folder.mkdir(exist_ok=True)
         today = datetime.now(CST).date().isoformat()
-        for day in set(days) | set(reports_by_day) | {today}:
+        for day in set(days) | set(reports_by_day) | set(pools_by_day) | {today}:
             target = folder / (day + ".json")
             tmp = target.with_suffix(".tmp")
             tmp.write_text(
@@ -73,6 +87,7 @@ def export_snapshot():
                     {
                         "items": days.get(day, []),
                         "reports": reports_by_day.get(day, []),
+                        "pools": [pools_by_day[day]] if day in pools_by_day else [],
                         "ai_status": ai_status,
                         "collector_status": collector_status,
                     },
