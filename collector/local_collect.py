@@ -49,6 +49,13 @@ def export_snapshot():
                 ai_status = json.loads(row[0])
                 if isinstance(ai_status, dict):
                     ai_status["ocr_available"] = bool(find_tesseract())
+                    try:
+                        ai_status["ocr_pending"] = int(conn.execute(
+                            "SELECT COUNT(*) FROM outbox "
+                            "WHERE json_extract(payload,'$.parse_status')='ocr_pending'"
+                        ).fetchone()[0])
+                    except sqlite3.Error:
+                        ai_status["ocr_pending"] = None
             row = conn.execute("SELECT value FROM runtime_status WHERE scope='collector'").fetchone()
             if row:
                 collector_status = json.loads(row[0])
