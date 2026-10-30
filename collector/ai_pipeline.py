@@ -208,6 +208,7 @@ def _call_qwen(items):
             {"role": "user", "content": json.dumps({"items": request_items}, ensure_ascii=False)},
         ],
         "think": False,
+        "format": "json",
         "stream": False,
         "keep_alive": "10m",
         "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": 1800},
