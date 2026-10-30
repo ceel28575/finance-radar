@@ -2,6 +2,7 @@ import sqlite3
 import unittest
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'collector'))
 from datetime import datetime
@@ -9,7 +10,8 @@ from zoneinfo import ZoneInfo
 
 from ai_pipeline import (
     _save_pool_once, _get_pool, _trade_action_signals,
-    _action_based_candidates, _merge_action_candidates, worker_delay, next_run_delay,
+    _action_based_candidates, _merge_action_candidates, worker_delay,
+    _ollama_runtime_status, next_run_delay,
 )
 
 CST = ZoneInfo("Asia/Shanghai")
@@ -111,6 +113,30 @@ class AIPipelineTests(unittest.TestCase):
         self.assertEqual(worker_delay({"pending_remaining": 0}, failed=True), 120)
         self.assertEqual(worker_delay({"pending_remaining": 0},
                                       now=datetime(2026, 10, 30, 15, 30, tzinfo=CST)), 1800)
+
+    def test_ollama_gpu_vram_is_reported_from_runtime(self):
+        class Response:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"models": [{"name": "qwen3.5:4b", "size_vram": 2147483648}]}
+        with patch("ai_pipeline.requests.get", return_value=Response()):
+            status = _ollama_runtime_status()
+        self.assertEqual(status["ollama_gpu_status"], "gpu")
+        self.assertEqual(status["ollama_vram_bytes"], 2147483648)
+
+    def test_ollama_cpu_and_not_loaded_states_are_distinguished(self):
+        class Response:
+            def __init__(self, models):
+                self.models = models
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"models": self.models}
+        with patch("ai_pipeline.requests.get", return_value=Response([{"name": "qwen3.5:4b", "size_vram": 0}])):
+            self.assertEqual(_ollama_runtime_status()["ollama_gpu_status"], "cpu")
+        with patch("ai_pipeline.requests.get", return_value=Response([])):
+            self.assertEqual(_ollama_runtime_status()["ollama_gpu_status"], "not_loaded")
 
     def test_market_session_runs_every_minute(self):
         now = datetime(2026, 10, 30, 10, 0, tzinfo=CST)
