@@ -45,6 +45,19 @@ export async function POST(req:Request){
   const now=new Date().toISOString();
   const statements=batch.items.map((x:any)=>db().prepare('INSERT INTO radar_items(id,day,room,published_at,payload,received_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET day=excluded.day,room=excluded.room,published_at=excluded.published_at,payload=excluded.payload,received_at=excluded.received_at').bind(x.id,dayOf(x.published_at),x.room,x.published_at,JSON.stringify(x),now));
   for(const r of batch.reports)statements.push(db().prepare('INSERT INTO radar_reports(id,day,generated_at,payload) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').bind(r.date+'|'+r.generated_at,r.date,r.generated_at,JSON.stringify(r)));
+  const frozenPoolChecks:any[]=[];
+  for(const pool of batch.pools){
+   const key='daily_pool:'+pool.date;
+   const existing=await db().prepare('SELECT value FROM radar_state WHERE key=?').bind(key).first<{value:string}>();
+   if(existing){
+    let saved:any;
+    try{saved=JSON.parse(existing.value)}catch{return json({error:'云端已有损坏的冻结股票池，拒绝覆盖'},409)}
+    if(JSON.stringify(saved)!==JSON.stringify(pool))return json({error:'该日期股票池已冻结，云端拒绝覆盖不同版本'},409);
+   }else{
+    statements.push(db().prepare('INSERT INTO radar_state(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING').bind(key,JSON.stringify(pool)));
+   }
+   frozenPoolChecks.push({key,pool});
+  }
   const status={at:now,accepted:batch.items.length,filtered:batch.filtered,client:body.client==='collector'?'collector':'import'};
   statements.push(db().prepare('INSERT INTO radar_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(status.client==='collector'?'collector':'last_import',JSON.stringify(status)));
   if(batch.ai_status){
@@ -58,11 +71,18 @@ export async function POST(req:Request){
    ));
   }
   await db().batch(statements);
+  for(const check of frozenPoolChecks){
+   const saved=await db().prepare('SELECT value FROM radar_state WHERE key=?').bind(check.key).first<{value:string}>();
+   if(!saved||JSON.stringify(JSON.parse(saved.value))!==JSON.stringify(check.pool)){
+    return json({error:'云端冻结股票池与本机快照不一致，拒绝静默覆盖'},409);
+   }
+  }
   return json({
    ok:true,
    accepted_ids:batch.items.map((x:any)=>x.id),
    filtered:batch.filtered,
    reports:batch.reports.length,
+   pools_saved:batch.pools.length,
    ai_status_saved:!!batch.ai_status,
    collector_status_saved:!!batch.collector_status,
    received_at:now
