@@ -726,9 +726,31 @@ def _merge_action_candidates(model_stocks, action_candidates):
 def worker_delay(result=None, failed=False, now=None):
     if failed:
         return 120
-    if int((result or {}).get("pending_remaining", 0) or 0) > 0:
+    if (result or {}).get("retry_soon") or int((result or {}).get("pending_remaining", 0) or 0) > 0:
         return 5
     return next_run_delay(now)
+
+
+def _collector_round_complete(conn):
+    try:
+        row = conn.execute(
+            "SELECT value FROM runtime_status WHERE scope='collector'"
+        ).fetchone()
+    except sqlite3.Error:
+        return True
+    if not row:
+        return True
+    try:
+        status = json.loads(row[0])
+    except (TypeError, ValueError):
+        return False
+    if status.get("stage") != "round_complete":
+        return False
+    total = int(status.get("rooms_total", 0) or 0)
+    done = int(status.get("rooms_done", 0) or 0)
+    backlog = int(status.get("backlog", 0) or 0)
+    unmapped = int(status.get("rooms_unmapped", 0) or 0)
+    return total > 0 and done >= total and backlog == 0 and unmapped == 0
 
 
 def run_ai_cycle(root, api_key):
@@ -799,6 +821,21 @@ def run_ai_cycle(root, api_key):
         after_close = _is_after_close(now)
         next_day = _next_business_day(today)
         next_pool = _get_pool(conn, next_day)
+        need_daily_pool = after_close and next_pool is None
+        if need_daily_pool and not _collector_round_complete(conn):
+            _status(
+                conn, "processing",
+                "等待 MX 完成当日全部房间扫描和历史回补；完成后再生成并冻结次日股票池。",
+                generated_at,
+                details=runtime_status,
+            )
+            return {
+                "status": "processing",
+                "analysed": len(all_analyses),
+                "report": False,
+                "pending_remaining": 0,
+                "retry_soon": True,
+            }
 
         if not analyses and not action_candidates:
             empty_digest = "empty:" + PROMPT_VERSION
@@ -841,7 +878,6 @@ def run_ai_cycle(root, api_key):
         )
         digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
         last_digest = _state_get(conn, "report_digest:" + today)
-        need_daily_pool = after_close and next_pool is None
         if digest == last_digest and not need_daily_pool:
             _status(conn, "ready", "模型连接正常；本轮没有新的有效资讯变化。", generated_at, details=runtime_status)
             return {
