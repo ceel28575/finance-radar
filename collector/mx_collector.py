@@ -24,6 +24,7 @@ DB_FILE = str(ROOT / "mx_outbox.db")
 SCAN_INTERVAL = 60
 MAX_LOAD_MORE = 50
 MAX_BATCH = 200
+MAX_OCR_PER_SCAN = 120
 
 
 def check_config():
@@ -525,6 +526,7 @@ def collect_loop(conn):
                     last_error = "未读到房间列表，请人工核对登录状态。"
                 save_status(conn, "collector", {"status": "collecting", "stage": "scanning", "rooms_total": total,
                             "rooms_done": 0, "backlog": total, "rooms_unmapped": unmapped, "rooms_duplicate": duplicates})
+                ocr_budget = [MAX_OCR_PER_SCAN]
                 for room in rooms:
                     progress = conn.execute("SELECT loaded_all FROM rooms WHERE room_key=?", (room["room_key"],)).fetchone()
                     loaded_all = bool(progress[0]) if progress else False
@@ -544,7 +546,8 @@ def collect_loop(conn):
                         continue
                     consecutive_failures = 0
                     page.wait_for_timeout(1200)
-                    ocr_budget = [24]  # Bound local OCR work per room scan; completed images are cached in SQLite.
+                    # One shared budget across the whole sweep prevents 100+ rooms
+                    # from triggering thousands of CPU OCR calls in a single round.
                     loaded_all = load_history(page, loaded_all, conn, room, ocr_budget)
                     enqueue(conn, extract_messages(page, room, conn, ocr_budget))
                     conn.execute("INSERT OR REPLACE INTO rooms (room_key, name, loaded_all, is_dup, updated_at) VALUES (?,?,?,?,?)",
