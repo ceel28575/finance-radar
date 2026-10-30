@@ -112,7 +112,7 @@ def _state_set(conn, key, value):
     conn.commit()
 
 
-def _status(conn, status, message, last_run=None, last_report=None):
+def _status(conn, status, message, last_run=None, last_report=None, details=None):
     payload = {
         "status": status,
         "provider": "本地千问 + 云端豆包",
@@ -122,8 +122,30 @@ def _status(conn, status, message, last_run=None, last_report=None):
         "last_run_at": last_run or iso_now(),
         "last_report_at": last_report,
     }
+    if isinstance(details, dict):
+        payload.update(details)
     _state_set(conn, "status", payload)
     return payload
+
+
+def _ollama_runtime_status():
+    try:
+        response = requests.get(OLLAMA_BASE + "/api/ps", timeout=(1, 3))
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        model = next(
+            (row for row in models if str(row.get("name") or row.get("model") or "").split(":")[0] == QWEN_MODEL.split(":")[0]),
+            None,
+        )
+        if model is None:
+            return {"ollama_gpu_status": "not_loaded", "ollama_vram_bytes": 0}
+        vram = max(0, int(model.get("size_vram", 0) or 0))
+        return {
+            "ollama_gpu_status": "gpu" if vram > 0 else "cpu",
+            "ollama_vram_bytes": vram,
+        }
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        return {"ollama_gpu_status": "unavailable", "ollama_vram_bytes": 0}
 
 
 def _blocked(item):
@@ -749,12 +771,14 @@ def run_ai_cycle(root, api_key):
             conn.commit()
             print("本地千问完成：%d 条新增/变更资讯。" % len(batch), flush=True)
 
+        runtime_status = _ollama_runtime_status()
         pending_remaining = max(0, len(pending) - (len(batch) if pending else 0))
         if pending_remaining:
             _status(
                 conn, "processing",
                 "本地千问正在分批处理当日资讯，当前队列尚余 %d 条；处理完成后再生成完整股票池。" % pending_remaining,
                 generated_at,
+                details=runtime_status,
             )
             return {
                 "status": "processing",
@@ -801,7 +825,7 @@ def run_ai_cycle(root, api_key):
                     summary="根据 " + today + " 的完整资讯处理结果，暂未发现可与具体公司对应的明确交易动作。",
                 ))
                 _state_set(conn, "report_digest:" + today, empty_digest)
-            _status(conn, "ready", "已完成文字资讯处理；当前没有足够证据识别明确的个股买卖动作。", generated_at)
+            _status(conn, "ready", "已完成文字资讯处理；当前没有足够证据识别明确的个股买卖动作。", generated_at, details=runtime_status)
             return {
                 "status": "ready", "analysed": len(all_analyses),
                 "report": after_close and not already_reported_empty, "pending_remaining": 0,
@@ -819,7 +843,7 @@ def run_ai_cycle(root, api_key):
         last_digest = _state_get(conn, "report_digest:" + today)
         need_daily_pool = after_close and next_pool is None
         if digest == last_digest and not need_daily_pool:
-            _status(conn, "ready", "模型连接正常；本轮没有新的有效资讯变化。", generated_at)
+            _status(conn, "ready", "模型连接正常；本轮没有新的有效资讯变化。", generated_at, details=runtime_status)
             return {
                 "status": "ready", "analysed": len(all_analyses),
                 "report": False, "pending_remaining": 0,
@@ -858,7 +882,7 @@ def run_ai_cycle(root, api_key):
             _save_report(conn, next_report)
 
         _state_set(conn, "report_digest:" + today, digest)
-        _status(conn, "ready", "本地千问与云端豆包均已完成本轮分析。", generated_at, generated_at)
+        _status(conn, "ready", "本地千问与云端豆包均已完成本轮分析。", generated_at, generated_at, details=runtime_status)
         print(
             "豆包研判完成：看多概率 %s；当日固定股票池 %d 只；报告已排队同步。"
             % (
@@ -902,6 +926,7 @@ def ai_worker(stop, root, api_key):
                 conn,
                 "degraded" if API_KEY_ERROR else "disabled",
                 API_KEY_ERROR or "未提供豆包 API Key；AI 分析未启动，MX 采集与同步继续。",
+                details=_ollama_runtime_status(),
             )
             conn.close()
         except sqlite3.Error:
@@ -926,7 +951,7 @@ def ai_worker(stop, root, api_key):
             try:
                 conn = sqlite3.connect(str(Path(root) / "mx_outbox.db"), timeout=10)
                 ensure_ai_schema(conn)
-                _status(conn, "degraded", str(error))
+                _status(conn, "degraded", str(error), details=_ollama_runtime_status())
                 conn.close()
             except sqlite3.Error:
                 pass
@@ -936,7 +961,7 @@ def ai_worker(stop, root, api_key):
             try:
                 conn = sqlite3.connect(str(Path(root) / "mx_outbox.db"), timeout=10)
                 ensure_ai_schema(conn)
-                _status(conn, "degraded", "AI 处理异常（%s），120秒后重试。" % type(error).__name__)
+                _status(conn, "degraded", "AI 处理异常（%s），120秒后重试。" % type(error).__name__, details=_ollama_runtime_status())
                 conn.close()
             except sqlite3.Error:
                 pass
