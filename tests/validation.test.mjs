@@ -7,11 +7,12 @@ test('invalid or naive dates rejected',()=>{for(const stamp of ['bad','2026-10-2
 test('overlarge batch rejected',()=>assert.throws(()=>normalizeBatch({items:Array(201).fill(item)})));
 
 test('AI pipeline status is validated and retained',()=>{
- const status={status:'processing',message:'千问队列尚余 12 条',last_run_at:'2026-10-30T15:00:00+08:00',qwen_model:'qwen3.5:4b',ocr_available:true,ollama_gpu_status:'gpu',ollama_vram_bytes:2147483648};
+ const status={status:'processing',message:'千问队列尚余 12 条',last_run_at:'2026-10-30T15:00:00+08:00',qwen_model:'qwen3.5:4b',ocr_available:true,ocr_pending:37,ollama_gpu_status:'gpu',ollama_vram_bytes:2147483648};
  const normalized=normalizeBatch({items:[],reports:[],ai_status:status});
  assert.equal(normalized.ai_status.status,'processing');
  assert.equal(normalized.ai_status.qwen_model,'qwen3.5:4b');
  assert.equal(normalized.ai_status.ocr_available,true);
+ assert.equal(normalized.ai_status.ocr_pending,37);
  assert.equal(normalized.ai_status.ollama_gpu_status,'gpu');
  assert.equal(normalized.ai_status.ollama_vram_bytes,2147483648);
 });
