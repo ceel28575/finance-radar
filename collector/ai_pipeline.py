@@ -627,13 +627,14 @@ def run_ai_cycle(root, api_key):
 
         previous = _latest_report(conn, today) or {}
         model_report = _call_doubao(api_key, today, generated_at, analyses, previous)
-        # Bootstrap today's frozen pool on first successful report when no prior
-        # after-close pool exists (e.g. first deployment day). Never overwrite it
-        # during later intraday refreshes.
+        # During the session, reports may refresh with new evidence but the
+        # daily stock pool is not frozen until after the close. This also lets
+        # a first-day deployment build a complete pool instead of freezing the
+        # first small intraday batch.
         today_pool = _get_pool(conn, today)
-        if today_pool is None:
+        if today_pool is None and after_close:
             today_pool = _save_pool_once(conn, today, model_report.get("stocks", []), generated_at)
-        today_stocks = today_pool.get("stocks", []) if today_pool else []
+        today_stocks = today_pool.get("stocks", []) if today_pool else model_report.get("stocks", [])
 
         current_report = dict(model_report, date=today, stocks=today_stocks)
         _save_report(conn, current_report)
