@@ -479,27 +479,25 @@ def collect_loop(conn):
             try:
                 rooms = discover_rooms(page)
                 total = len(rooms)
-                unmapped = sum(1 for room in rooms if room["is_dup"])
+                unmapped = 0
+                duplicates = sum(1 for room in rooms if room["is_dup"])
                 if not rooms:
                     last_error = "未读到房间列表，请人工核对登录状态。"
                 save_status(conn, "collector", {"status": "collecting", "stage": "scanning", "rooms_total": total,
-                            "rooms_done": 0, "backlog": total, "rooms_unmapped": unmapped})
+                            "rooms_done": 0, "backlog": total, "rooms_unmapped": unmapped, "rooms_duplicate": duplicates})
                 for room in rooms:
-                    if room["is_dup"]:
-                        backlog += 1
-                        last_error = "重名房间待稳定映射，暂不入库，避免串房。"
-                        continue
                     progress = conn.execute("SELECT loaded_all FROM rooms WHERE room_key=?", (room["room_key"],)).fetchone()
                     loaded_all = bool(progress[0]) if progress else False
                     try:
                         click_room(page, room)
                     except Exception as error:
                         last_error = "房间切换失败（%s），保留采集断点。" % type(error).__name__
+                        unmapped += 1
                         consecutive_failures += 1
                         print(last_error)
                         save_status(conn, "collector", {"status": "collecting", "stage": "room_switch_failed",
                                     "rooms_total": total, "rooms_done": done, "backlog": total - history_done,
-                                    "rooms_unmapped": unmapped, "last_error": last_error})
+                                    "rooms_unmapped": unmapped, "rooms_duplicate": duplicates, "last_error": last_error})
                         if consecutive_failures >= 3:
                             print("连续3次切换失败，暂停本轮，60秒后自动重试；请检查MX登录状态。", flush=True)
                             break
