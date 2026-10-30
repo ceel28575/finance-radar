@@ -479,6 +479,7 @@ def _clean_company_name(value):
         name,
         flags=re.I,
     )
+    name = re.sub(r"\.(?:SZ|SH|BJ)\b", "", name, flags=re.I)
     name = re.sub(r"\s+", " ", name).strip(" -_()（）[]【】")
     return name
 
