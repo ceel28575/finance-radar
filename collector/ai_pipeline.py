@@ -24,7 +24,7 @@ OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip
 QWEN_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
 ARK_URL = "https://ark.cn-beijing.volces.com/api/v3/responses"
 ARK_MODEL = os.environ.get("ARK_MODEL", "doubao-seed-evolving")
-MAX_QWEN_ITEMS = 12
+MAX_QWEN_ITEMS = 6
 MAX_DAILY_CONTEXT = 40
 MAX_ACTION_SCAN = 3000
 PROMPT_VERSION = "trade-actions-v3"
@@ -233,7 +233,7 @@ def _source_view(source_key, item):
         "room": str(item.get("room") or item.get("source") or "MX")[:100],
         "author": str(item.get("author") or "")[:80],
         "published_at": str(item.get("published_at") or "")[:40],
-        "content": str(item.get("content") or "")[:1400],
+        "content": str(item.get("content") or "")[:900],
         "trade_action_signals": _trade_action_signals(item.get("content")),
         "media_types": sorted({str(x.get("type")) for x in media if isinstance(x, dict) and x.get("type")}),
         "image_ocr_pending": bool(item.get("parse_status") == "ocr_pending"),
