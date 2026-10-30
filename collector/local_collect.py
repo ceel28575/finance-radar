@@ -28,6 +28,7 @@ def export_snapshot():
             x["source"] = x.get("room") or x.get("room_name") or x.get("source") or "MX"
             days.setdefault(day, []).append(x)
         reports_by_day = {}
+        ai_status = None
         try:
             for raw_day, raw_report in conn.execute(
                 "SELECT date,payload FROM ai_reports ORDER BY generated_at"
@@ -36,17 +37,25 @@ def export_snapshot():
                     reports_by_day.setdefault(raw_day, []).append(json.loads(raw_report))
                 except (ValueError, TypeError):
                     continue
+            row = conn.execute("SELECT value FROM ai_state WHERE key='status'").fetchone()
+            if row:
+                ai_status = json.loads(row[0])
         except Exception:
             # AI tables may not exist during the very first collector boot.
             pass
         folder = ROOT / "exports"
         folder.mkdir(exist_ok=True)
-        for day in set(days) | set(reports_by_day):
+        today = datetime.now(CST).date().isoformat()
+        for day in set(days) | set(reports_by_day) | {today}:
             target = folder / (day + ".json")
             tmp = target.with_suffix(".tmp")
             tmp.write_text(
                 json.dumps(
-                    {"items": days.get(day, []), "reports": reports_by_day.get(day, [])},
+                    {
+                        "items": days.get(day, []),
+                        "reports": reports_by_day.get(day, []),
+                        "ai_status": ai_status,
+                    },
                     ensure_ascii=False,
                 ),
                 encoding="utf-8",
