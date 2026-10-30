@@ -115,24 +115,44 @@ class AIPipelineTests(unittest.TestCase):
         self.assertEqual(worker_delay({"pending_remaining": 0},
                                       now=datetime(2026, 10, 30, 15, 30, tzinfo=CST)), 1800)
 
-    def test_next_day_pool_waits_for_complete_room_scan(self):
+    def test_next_day_pool_waits_for_fresh_complete_room_scan(self):
         self.conn.execute("CREATE TABLE runtime_status(scope TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        now = datetime(2026, 10, 30, 15, 10, tzinfo=CST)
         complete = {
-            "stage": "round_complete", "rooms_total": 135, "rooms_done": 135,
-            "backlog": 0, "rooms_unmapped": 0,
+            "status": "collecting", "stage": "round_complete",
+            "updated_at": "2026-10-30T15:09:30+08:00",
+            "rooms_total": 135, "rooms_done": 135,
+            "backlog": 0, "rooms_unmapped": 0, "last_error": "",
         }
         self.conn.execute(
             "INSERT INTO runtime_status(scope,value) VALUES(?,?)",
             ("collector", json.dumps(complete)),
         )
-        self.assertTrue(_collector_round_complete(self.conn))
+        self.assertTrue(_collector_round_complete(self.conn, "2026-10-30", now))
         incomplete = dict(complete, rooms_done=120, backlog=15)
         self.conn.execute(
             "UPDATE runtime_status SET value=? WHERE scope='collector'",
             (json.dumps(incomplete),),
         )
-        self.assertFalse(_collector_round_complete(self.conn))
+        self.assertFalse(_collector_round_complete(self.conn, "2026-10-30", now))
+        stale = dict(complete, updated_at="2026-10-29T15:09:30+08:00")
+        self.conn.execute(
+            "UPDATE runtime_status SET value=? WHERE scope='collector'",
+            (json.dumps(stale),),
+        )
+        self.assertFalse(_collector_round_complete(self.conn, "2026-10-30", now))
+        errored = dict(complete, last_error="MX room click failed")
+        self.conn.execute(
+            "UPDATE runtime_status SET value=? WHERE scope='collector'",
+            (json.dumps(errored),),
+        )
+        self.assertFalse(_collector_round_complete(self.conn, "2026-10-30", now))
         self.assertEqual(worker_delay({"retry_soon": True}), 5)
+
+    def test_missing_collector_status_does_not_claim_scan_complete(self):
+        self.assertFalse(_collector_round_complete(
+            self.conn, "2026-10-30", datetime(2026, 10, 30, 15, 10, tzinfo=CST)
+        ))
 
     def test_ollama_gpu_vram_is_reported_from_runtime(self):
         class Response:
