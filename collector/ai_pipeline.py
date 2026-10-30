@@ -26,6 +26,7 @@ ARK_URL = "https://ark.cn-beijing.volces.com/api/v3/responses"
 ARK_MODEL = os.environ.get("ARK_MODEL", "doubao-seed-evolving")
 MAX_QWEN_ITEMS = 12
 MAX_DAILY_CONTEXT = 40
+PROMPT_VERSION = "trade-actions-v2"
 
 
 class AIError(RuntimeError):
@@ -132,8 +133,43 @@ def _day_of(stamp):
         return ""
 
 
+def _trade_action_signals(text):
+    """Expose explicit buy/low-entry and high-sell/sell language to both models."""
+    compact = re.sub(r"\s+", "", str(text or ""))
+    signals = []
+    patterns = (
+        ("bull", re.compile(r"低吸|买入|买进|买")),
+        ("bear", re.compile(r"高抛|卖出|卖")),
+    )
+    negation = re.compile(
+        r"(?:不|别|不要|暂不|暂时不|并不|并非|不是|无需|不宜|不建议|没必要|"
+        r"没有必要|不能|禁止|未到|尚未).{0,3}$"
+    )
+    for direction, pattern in patterns:
+        for match in pattern.finditer(compact):
+            start, end = match.span()
+            phrase = match.group(0)
+            around = compact[max(0, start - 1):min(len(compact), end + 1)]
+            # "买卖双方/买卖关系" is not a trading recommendation.
+            if "买卖" in around or compact[end:end + 1] == "方":
+                continue
+            prefix = compact[max(0, start - 8):start]
+            suffix = compact[end:end + 8]
+            negated = bool(negation.search(prefix)) or bool(
+                re.match(r"(?:条件未到|时机未到|还不能|暂缓)", suffix)
+            )
+            signals.append({
+                "direction": direction,
+                "phrase": phrase,
+                "negated": negated,
+                "context": compact[max(0, start - 16):min(len(compact), end + 16)],
+            })
+    return signals[:24]
+
+
 def _fingerprint(item):
     stable = {k: v for k, v in item.items() if k not in ("collected_at",)}
+    stable["_analysis_prompt_version"] = PROMPT_VERSION
     raw = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -160,6 +196,7 @@ def _source_view(source_key, item):
         "author": str(item.get("author") or "")[:80],
         "published_at": str(item.get("published_at") or "")[:40],
         "content": str(item.get("content") or "")[:1400],
+        "trade_action_signals": _trade_action_signals(item.get("content")),
         "media_types": sorted({str(x.get("type")) for x in media if isinstance(x, dict) and x.get("type")}),
         "image_ocr_pending": bool(item.get("parse_status") == "ocr_pending"),
     }
@@ -193,6 +230,7 @@ def _call_qwen(items):
             "author": str(item.get("author") or "")[:60],
             "published_at": str(item.get("published_at") or "")[:40],
             "content": str(item.get("content") or "")[:1400],
+            "trade_action_signals": _trade_action_signals(item.get("content")),
             "has_images": any(
                 isinstance(media, dict) and media.get("type") == "image"
                 for media in (item.get("media") or [])
@@ -208,7 +246,9 @@ def _call_qwen(items):
         '"companies":[],"stance":"bullish|bearish|neutral|mixed",'
         '"summary":"一句话摘要","facts":[],"catalysts":[],"risks":[]}] }。'
         "每条输入必须返回且 id 必须逐字一致。relevance 为 0 到 5；无关信息为 0。"
-        "只有原文明确表达时才标注多空；不确定用 neutral。"
+        "交易方向按原文操作意图判断，不要求出现“看多/看空”字样：针对具体标的出现“买/买入/低吸”标 bullish；出现“高抛/卖/卖出”标 bearish。\n"
+        "识别否定表达（如不要买、不建议买、不卖、暂不卖）时不要按关键词机械归类；“高抛低吸”等同句双向策略标 mixed，除非上下文能明确对应到具体标的的单一操作。\n"
+        "“买方/卖方/买卖双方”等非操作建议不作为交易信号；公司名称与动作必须能从原文对应。证据不足用 neutral。"
     )
     body = {
         "model": QWEN_MODEL,
@@ -443,12 +483,16 @@ def _call_doubao(api_key, today, generated_at, analyses, previous_report):
         "本地千问结果只是线索，必须回看原文；不能把未经证实的传闻写成事实。"
         "不允许虚构股价、订单、客户、产能、业绩数字或公告。证据不足时明确写证据不足。"
         "指数看多概率是主观情景判断，不是统计胜率。股票名称只写公司中文名称，不写六位代码。"
+        "股票池按作者对具体标的的操作意图归类，不要求原文出现“看多/看空”：出现“买/买入/低吸”归看多 bull；出现“高抛/卖/卖出”归看空 bear。"
+        "必须把动作和对应公司匹配；否定表达（不要买、不建议买、不卖、暂不卖等）不能按关键词机械归类；“高抛低吸”这类同句双向策略若无法拆分到具体标的操作则不入单边池。"
+        "“买方/卖方/买卖双方”等非交易建议不算信号。若同一标的多条消息方向冲突，优先采用最新明确操作，并在 change 中说明。"
         "只输出一个严格 JSON 对象，不要 Markdown 或额外文字。"
         '结构：{"title":"...","summary":"...","index_reason":"...","bull_probability":0到100或null,'
         '"risk":"...","stocks":[{"name":"公司名称","direction":"bull或bear","score":0到100,'
         '"sector":"行业","reason":"有来源依据的逻辑","catalyst":"催化因素","risk":"风险",'
         '"invalidation":"观点失效条件","change":"相对前轮变化","evidence_ids":["输入中的原文ID"]}]}。'
         "股票池最多 20 只；每只必须至少引用一个输入 evidence_id；证据不足就不入池。"
+        "只要原文明确出现对应标的的有效买/低吸或高抛/卖操作，就应纳入对应方向，不得因为没有出现“看多/看空”四个字而漏掉。"
         "同时给出看多和看空候选，不足的一侧可以为空。"
     )
     compact = {
@@ -527,7 +571,17 @@ def _save_report(conn, report):
 def _save_pool_once(conn, day, stocks, generated_at):
     existing = _get_pool(conn, day)
     if existing is not None:
-        return existing
+        # Keep a non-empty daily pool immutable. An empty placeholder is not
+        # frozen forever: allow the first evidence-backed candidates to fill it.
+        if existing.get("stocks") or not stocks:
+            return existing
+        payload = {"stocks": stocks, "generated_at": generated_at}
+        conn.execute(
+            "UPDATE ai_daily_pool SET payload=?,created_at=? WHERE pool_date=?",
+            (json.dumps(payload, ensure_ascii=False), generated_at, day),
+        )
+        conn.commit()
+        return _get_pool(conn, day) or payload
     payload = {"stocks": stocks, "generated_at": generated_at}
     conn.execute(
         "INSERT OR IGNORE INTO ai_daily_pool(pool_date,payload,created_at) VALUES(?,?,?)",
@@ -612,7 +666,10 @@ def run_ai_cycle(root, api_key):
             return {"status": "ready", "analysed": 0, "report": False}
 
         digest_source = json.dumps(
-            [(x["source"]["id"], x["local_analysis"]) for x in analyses],
+            {
+                "prompt_version": PROMPT_VERSION,
+                "items": [(x["source"]["id"], x["local_analysis"]) for x in analyses],
+            },
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
         digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
@@ -620,7 +677,9 @@ def run_ai_cycle(root, api_key):
         next_day = _next_business_day(today)
         next_pool = _get_pool(conn, next_day)
         after_close = _is_after_close(now)
-        need_daily_pool = after_close and next_pool is None
+        need_daily_pool = after_close and (
+            next_pool is None or (not next_pool.get("stocks") and digest != last_digest)
+        )
         if digest == last_digest and not need_daily_pool:
             _status(conn, "ready", "模型连接正常；本轮没有新的有效资讯变化。", generated_at)
             return {"status": "ready", "analysed": len(analyses), "report": False}
@@ -634,7 +693,15 @@ def run_ai_cycle(root, api_key):
         today_pool = _get_pool(conn, today)
         if today_pool is None and after_close:
             today_pool = _save_pool_once(conn, today, model_report.get("stocks", []), generated_at)
-        today_stocks = today_pool.get("stocks", []) if today_pool else model_report.get("stocks", [])
+        elif today_pool is not None and not today_pool.get("stocks") and model_report.get("stocks"):
+            # An empty placeholder from the previous close may be filled by the
+            # first evidence-backed action list; once non-empty, the pool freezes.
+            today_pool = _save_pool_once(conn, today, model_report.get("stocks", []), generated_at)
+        today_stocks = (
+            today_pool.get("stocks", [])
+            if today_pool and today_pool.get("stocks")
+            else model_report.get("stocks", [])
+        )
 
         current_report = dict(model_report, date=today, stocks=today_stocks)
         _save_report(conn, current_report)
