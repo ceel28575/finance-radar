@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from ai_pipeline import (
     _save_pool_once, _get_pool, _trade_action_signals,
     _action_based_candidates, _merge_action_candidates, worker_delay,
-    _ollama_runtime_status, next_run_delay,
+    _collector_round_complete, _ollama_runtime_status, next_run_delay,
 )
 
 CST = ZoneInfo("Asia/Shanghai")
@@ -113,6 +113,25 @@ class AIPipelineTests(unittest.TestCase):
         self.assertEqual(worker_delay({"pending_remaining": 0}, failed=True), 120)
         self.assertEqual(worker_delay({"pending_remaining": 0},
                                       now=datetime(2026, 10, 30, 15, 30, tzinfo=CST)), 1800)
+
+    def test_next_day_pool_waits_for_complete_room_scan(self):
+        self.conn.execute("CREATE TABLE runtime_status(scope TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        complete = {
+            "stage": "round_complete", "rooms_total": 135, "rooms_done": 135,
+            "backlog": 0, "rooms_unmapped": 0,
+        }
+        self.conn.execute(
+            "INSERT INTO runtime_status(scope,value) VALUES(?,?)",
+            ("collector", __import__("json").dumps(complete)),
+        )
+        self.assertTrue(_collector_round_complete(self.conn))
+        incomplete = dict(complete, rooms_done=120, backlog=15)
+        self.conn.execute(
+            "UPDATE runtime_status SET value=? WHERE scope='collector'",
+            (__import__("json").dumps(incomplete),),
+        )
+        self.assertFalse(_collector_round_complete(self.conn))
+        self.assertEqual(worker_delay({"retry_soon": True}), 5)
 
     def test_ollama_gpu_vram_is_reported_from_runtime(self):
         class Response:
