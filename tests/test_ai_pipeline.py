@@ -116,6 +116,17 @@ class AIPipelineTests(unittest.TestCase):
                          {"沪电股份": "bull", "生益电子": "bear"})
         self.assertTrue(all(x["evidence_ids"] == ["msg-1"] for x in candidates))
 
+    def test_action_candidates_tolerate_non_numeric_relevance(self):
+        rows = [{
+            "source": {
+                "id": "msg-relevance", "published_at": "2026-10-30T09:32:00+08:00",
+                "content": "甲公司低吸",
+            },
+            "local_analysis": {"companies": ["甲公司"], "relevance": "high"},
+        }]
+        candidates = _action_based_candidates(rows)
+        self.assertEqual(candidates[0]["score"], 60)
+
     def test_action_candidates_ignore_negation_and_mixed_strategy(self):
         rows = [
             {
