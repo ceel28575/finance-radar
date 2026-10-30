@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import unittest
 import sys
@@ -122,13 +123,13 @@ class AIPipelineTests(unittest.TestCase):
         }
         self.conn.execute(
             "INSERT INTO runtime_status(scope,value) VALUES(?,?)",
-            ("collector", __import__("json").dumps(complete)),
+            ("collector", json.dumps(complete)),
         )
         self.assertTrue(_collector_round_complete(self.conn))
         incomplete = dict(complete, rooms_done=120, backlog=15)
         self.conn.execute(
             "UPDATE runtime_status SET value=? WHERE scope='collector'",
-            (__import__("json").dumps(incomplete),),
+            (json.dumps(incomplete),),
         )
         self.assertFalse(_collector_round_complete(self.conn))
         self.assertEqual(worker_delay({"retry_soon": True}), 5)
