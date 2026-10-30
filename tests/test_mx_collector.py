@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collector"))
 
-from mx_collector import apply_room_identity, load_history, _oldest_message_key
+from mx_collector import apply_room_identity, load_history, _oldest_message_key, parse_time_for_archive
 
 
 class FakeLocator:
@@ -98,6 +98,18 @@ class MXRoomIdentityTests(unittest.TestCase):
             self.assertTrue(load_history(page, True, self.conn, room, [0], "older"))
         self.assertEqual(page.index, 0)
         enqueue_mock.assert_called_once()
+
+    def test_unrecognized_timestamp_is_archived_with_collection_time_fallback(self):
+        fallback = "2026-10-30T08:30:00+00:00"
+        stamp, rule = parse_time_for_archive("昨天上午九点半", fallback)
+        self.assertEqual(stamp, fallback)
+        self.assertEqual(rule, "collected_at_fallback")
+
+    def test_explicit_timestamp_is_not_replaced_by_collection_time(self):
+        fallback = "2026-10-30T08:30:00+00:00"
+        stamp, rule = parse_time_for_archive("2026-10-30T09:30:00+08:00", fallback)
+        self.assertEqual(stamp, "2026-10-30T01:30:00+00:00")
+        self.assertEqual(rule, "explicit_iso")
 
     def test_oldest_message_cursor_uses_earliest_timestamp(self):
         items = [
