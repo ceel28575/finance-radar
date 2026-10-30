@@ -515,7 +515,7 @@ def collect_loop(conn):
                     backlog += int(not loaded_all)
                     save_status(conn, "collector", {"status": "collecting", "stage": "scanning", "rooms_total": total,
                                 "rooms_done": done, "backlog": total - history_done,
-                                "rooms_unmapped": unmapped, "last_error": last_error})
+                                "rooms_unmapped": unmapped, "rooms_duplicate": duplicates, "last_error": last_error})
                     pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE status='pending'").fetchone()[0]
                     print("采集进度：本轮 %d/%d 房间；本地待上传 %d 条；当前房间历史%s。" %
                           (done, total, pending, "已追平" if loaded_all else "待回补"))
@@ -525,7 +525,7 @@ def collect_loop(conn):
                 print(last_error)
             save_status(conn, "collector", {"status": "collecting" if done else "failed", "stage": "round_complete",
                         "rooms_total": total, "rooms_done": done, "backlog": total - history_done,
-                        "rooms_unmapped": unmapped, "last_error": last_error})
+                        "rooms_unmapped": unmapped, "rooms_duplicate": duplicates, "last_error": last_error})
             time.sleep(SCAN_INTERVAL)
 
 
