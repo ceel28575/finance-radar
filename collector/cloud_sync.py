@@ -108,6 +108,29 @@ def sync_exports(root, stop=None, post=None):
             conn.commit()
             uploaded += 1
 
+        if not batches and not pending_reports and pending_status is None:
+            batches=[[]]  # heartbeat, even when there is no new message, report or status
+        for batch in batches:
+            if stop and stop.is_set():
+                break
+            response=post(SITE_URL+'/api/radar/ingest',headers={'OAI-Sites-Authorization':'Bearer '+config['site_token']},json={'items':[r[0] for r in batch],'reports':[],'client':'collector'},timeout=(10,30),allow_redirects=False)
+            if response.status_code in (401,403) or 300<=response.status_code<400:
+                raise SyncError('同步授权已失效，请登录网页重新下载同步配置')
+            response.raise_for_status()
+            result=response.json()
+            if result.get('ok') is not True or not isinstance(result.get('accepted_ids'),list):
+                raise SyncError('服务未确认接收，保留本机等待重试')
+            if not all(isinstance(value, str) for value in result['accepted_ids']):
+                raise SyncError('服务确认格式错误，保留本机等待重试')
+            expected = {item['id'] for item, digest in batch}
+            accepted=set(result['accepted_ids']) & expected
+            for item,digest in batch:
+                if item['id'] in accepted:
+                    conn.execute('INSERT INTO synced(target,id,hash) VALUES(?,?,?) ON CONFLICT(target,id) DO UPDATE SET hash=excluded.hash',(target,item['id'],digest))
+                    uploaded+=1
+            conn.commit()
+            if accepted != expected:
+                raise SyncError('部分记录未接收，请检查来源过滤与数据格式')
         # Reports are uploaded separately because the site accepts at most 20 per request.
         for offset in range(0, len(pending_reports), 20):
             report_batch = pending_reports[offset:offset + 20]
@@ -134,29 +157,6 @@ def sync_exports(root, stop=None, post=None):
             conn.commit()
             uploaded += len(report_batch)
 
-        if not batches and not pending_reports and pending_status is None:
-            batches=[[]]  # heartbeat, even when there is no new message, report or status
-        for batch in batches:
-            if stop and stop.is_set():
-                break
-            response=post(SITE_URL+'/api/radar/ingest',headers={'OAI-Sites-Authorization':'Bearer '+config['site_token']},json={'items':[r[0] for r in batch],'reports':[],'client':'collector'},timeout=(10,30),allow_redirects=False)
-            if response.status_code in (401,403) or 300<=response.status_code<400:
-                raise SyncError('同步授权已失效，请登录网页重新下载同步配置')
-            response.raise_for_status()
-            result=response.json()
-            if result.get('ok') is not True or not isinstance(result.get('accepted_ids'),list):
-                raise SyncError('服务未确认接收，保留本机等待重试')
-            if not all(isinstance(value, str) for value in result['accepted_ids']):
-                raise SyncError('服务确认格式错误，保留本机等待重试')
-            expected = {item['id'] for item, digest in batch}
-            accepted=set(result['accepted_ids']) & expected
-            for item,digest in batch:
-                if item['id'] in accepted:
-                    conn.execute('INSERT INTO synced(target,id,hash) VALUES(?,?,?) ON CONFLICT(target,id) DO UPDATE SET hash=excluded.hash',(target,item['id'],digest))
-                    uploaded+=1
-            conn.commit()
-            if accepted != expected:
-                raise SyncError('部分记录未接收，请检查来源过滤与数据格式')
         print('Cloud sync complete:',uploaded,'new/updated items/reports/status',flush=True)
         return uploaded
     finally:
