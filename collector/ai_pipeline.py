@@ -523,7 +523,21 @@ def _normalize_stocks(value, allowed_ids):
             "change": str(row.get("change") or "")[:1000],
             "evidence_ids": evidence,
         })
-    return result
+    by_name = {}
+    conflicts = set()
+    for row in result:
+        name = row["name"]
+        previous = by_name.get(name)
+        if previous is None:
+            by_name[name] = row
+        elif previous["direction"] != row["direction"]:
+            conflicts.add(name)
+        else:
+            previous["score"] = max(previous["score"], row["score"])
+            previous["evidence_ids"] = list(dict.fromkeys(
+                previous["evidence_ids"] + row["evidence_ids"]
+            ))[:12]
+    return [row for name, row in by_name.items() if name not in conflicts]
 
 
 def _call_doubao(api_key, today, generated_at, analyses, previous_report, action_candidates=None):
