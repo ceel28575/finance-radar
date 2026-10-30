@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -15,20 +16,34 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_OCR_CHARS = 5000
 
 
+@lru_cache(maxsize=1)
 def find_tesseract():
     configured = os.environ.get("TESSERACT_CMD", "").strip().strip('"')
+    candidates = []
     if configured and Path(configured).is_file():
-        return configured
+        candidates.append(configured)
     found = shutil.which("tesseract")
     if found:
-        return found
+        candidates.append(found)
     if os.name == "nt":
         for candidate in (
             Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Tesseract-OCR" / "tesseract.exe",
             Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Tesseract-OCR" / "tesseract.exe",
         ):
             if candidate.is_file():
-                return str(candidate)
+                candidates.append(str(candidate))
+    for executable in dict.fromkeys(candidates):
+        try:
+            result = subprocess.run(
+                [executable, "--list-langs"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=5, check=False,
+            )
+            languages = {line.strip() for line in result.stdout.splitlines()}
+            if result.returncode == 0 and "chi_sim" in languages:
+                return executable
+        except (OSError, subprocess.TimeoutExpired):
+            continue
     return None
 
 
