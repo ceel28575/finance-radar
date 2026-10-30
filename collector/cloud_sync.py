@@ -42,8 +42,15 @@ def sync_exports(root, stop=None, post=None):
     try:
         pending = []
         pending_reports = []
+        latest_ai_status = None
         for file in sorted((root / 'exports').glob('????-??-??.json')):
             snapshot = json.loads(file.read_text(encoding='utf-8'))
+            candidate_status = snapshot.get('ai_status')
+            if isinstance(candidate_status, dict):
+                current_stamp = str((latest_ai_status or {}).get('last_run_at') or '')
+                candidate_stamp = str(candidate_status.get('last_run_at') or '')
+                if latest_ai_status is None or candidate_stamp >= current_stamp:
+                    latest_ai_status = candidate_status
             for item in snapshot.get('items', []):
                 digest = fingerprint(item)
                 old = conn.execute('SELECT hash FROM synced WHERE target=? AND id=?', (target,item['id'])).fetchone()
@@ -57,6 +64,16 @@ def sync_exports(root, stop=None, post=None):
                 old = conn.execute('SELECT hash FROM synced WHERE target=? AND id=?', (target,report_id)).fetchone()
                 if not old or old[0] != digest:
                     pending_reports.append((report_id,report,digest))
+
+        pending_status = None
+        if latest_ai_status is not None:
+            status_id = 'status:ai_pipeline'
+            status_digest = fingerprint(latest_ai_status)
+            old = conn.execute(
+                'SELECT hash FROM synced WHERE target=? AND id=?', (target, status_id)
+            ).fetchone()
+            if not old or old[0] != status_digest:
+                pending_status = (status_id, latest_ai_status, status_digest)
         batches, batch, size = [], [], 0
         for record in pending:
             n = len(json.dumps(record[0], ensure_ascii=False).encode())
@@ -67,6 +84,30 @@ def sync_exports(root, stop=None, post=None):
             batch.append(record);size+=n
         if batch:
             batches.append(batch)
+        if pending_status is not None:
+            status_id, ai_status, digest = pending_status
+            if stop and stop.is_set():
+                return uploaded
+            response = post(
+                SITE_URL + '/api/radar/ingest',
+                headers={'OAI-Sites-Authorization':'Bearer '+config['site_token']},
+                json={'items': [], 'reports': [], 'ai_status': ai_status, 'client':'collector'},
+                timeout=(10,30), allow_redirects=False,
+            )
+            if response.status_code in (401,403) or 300 <= response.status_code < 400:
+                raise SyncError('同步授权已失效，请登录网页重新下载同步配置')
+            response.raise_for_status()
+            result = response.json()
+            if result.get('ok') is not True or result.get('ai_status_saved') is not True:
+                raise SyncError('AI 运行状态未获服务确认，保留本机等待重试')
+            conn.execute(
+                'INSERT INTO synced(target,id,hash) VALUES(?,?,?) '
+                'ON CONFLICT(target,id) DO UPDATE SET hash=excluded.hash',
+                (target, status_id, digest),
+            )
+            conn.commit()
+            uploaded += 1
+
         # Reports are uploaded separately because the site accepts at most 20 per request.
         for offset in range(0, len(pending_reports), 20):
             report_batch = pending_reports[offset:offset + 20]
@@ -93,8 +134,8 @@ def sync_exports(root, stop=None, post=None):
             conn.commit()
             uploaded += len(report_batch)
 
-        if not batches and not pending_reports:
-            batches=[[]]  # heartbeat, even when there is no new message or report
+        if not batches and not pending_reports and pending_status is None:
+            batches=[[]]  # heartbeat, even when there is no new message, report or status
         for batch in batches:
             if stop and stop.is_set():
                 break
@@ -116,7 +157,7 @@ def sync_exports(root, stop=None, post=None):
             conn.commit()
             if accepted != expected:
                 raise SyncError('部分记录未接收，请检查来源过滤与数据格式')
-        print('Cloud sync complete:',uploaded,'new/updated items/reports',flush=True)
+        print('Cloud sync complete:',uploaded,'new/updated items/reports/status',flush=True)
         return uploaded
     finally:
         conn.close()
