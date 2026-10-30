@@ -260,10 +260,9 @@ def discover_rooms(page):
     for room in rooms:
         if counts[room["name"]] > 1:
             room["is_dup"] = True
-            if room["stable_id"] and stable_counts.get((room["name"], room["stable_id"])) == 1:
-                room["room_key"] = "%s#id:%s" % (room["name"], room["stable_id"])
-            else:
-                room["room_key"] = "%s#dom:%d" % (room["name"], room["dom_index"])
+            # Preserve the existing local room-key format to avoid duplicating
+            # previously collected messages after this upgrade.
+            room["room_key"] = "%s#%d" % (room["name"], room["dom_index"])
     if counts.get("到期待上新", 0):
         print("本轮发现“到期待上新”%d 个；重名房间按 DOM 序号临时区分，稳定映射仍待核实。" % counts["到期待上新"])
     rooms.sort(key=lambda room: -(room["latest_ms"] or 0))
