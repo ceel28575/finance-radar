@@ -433,6 +433,20 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
             published_at or ("raw:" + (raw_time or "null")),
             hashlib.md5(fingerprint.encode("utf-8")).hexdigest(),
         )
+        # The history cursor must survive inferred HH:MM dates rolling over
+        # at midnight and expiring image URL query parameters.
+        cursor_media = [
+            {
+                "type": media_item["type"],
+                "src": urlparse(media_item["src"])._replace(query="", fragment="").geturl(),
+            }
+            for media_item in media
+        ]
+        history_fingerprint = json.dumps(
+            [raw_time, sender[:80], identity_content, cursor_media],
+            ensure_ascii=False, sort_keys=True,
+        )
+        history_key = hashlib.sha256(history_fingerprint.encode("utf-8")).hexdigest()
 
         previous_content = None
         previous_parse_status = ""
@@ -475,19 +489,24 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
             "room_key": room["room_key"], "author": sender[:80], "title": content[:60],
             "content": content, "published_at": published_at, "raw_time": raw_time, "time_rule": rule,
             "collected_at": now_iso(), "parse_status": parse_status, "media": media,
+            "history_key": history_key,
         })
     return items
+
+def _history_message_key(item):
+    return item.get("history_key") or item.get("source_key")
+
 
 def _oldest_message_key(items):
     if not items:
         return None
     dated = [
         item for item in items
-        if item.get("source_key") and item.get("published_at")
+        if _history_message_key(item) and item.get("published_at")
     ]
     if dated:
-        return min(dated, key=lambda item: str(item["published_at"]))["source_key"]
-    return items[0].get("source_key")
+        return _history_message_key(min(dated, key=lambda item: str(item["published_at"])))
+    return _history_message_key(items[0])
 
 
 def _save_room_history_state(conn, room, loaded_all, cursor):
@@ -516,7 +535,7 @@ def load_history(page, loaded_all, conn, room, ocr_budget=None, history_cursor=N
 
     oldest_key = _oldest_message_key(items)
     cursor_reached = not history_cursor
-    if history_cursor and any(item.get("source_key") == history_cursor for item in items):
+    if history_cursor and any(_history_message_key(item) == history_cursor for item in items):
         cursor_reached = True
     if cursor_reached and oldest_key:
         _save_room_history_state(conn, room, False, oldest_key)
@@ -541,7 +560,7 @@ def load_history(page, loaded_all, conn, room, ocr_budget=None, history_cursor=N
                     oldest_key = new_oldest
                 if not cursor_reached and history_cursor:
                     cursor_reached = any(
-                        item.get("source_key") == history_cursor for item in page_items
+                        _history_message_key(item) == history_cursor for item in page_items
                     )
                 if cursor_reached and oldest_key:
                     # Save progress only after replaying the previous cursor;
