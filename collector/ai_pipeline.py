@@ -176,12 +176,23 @@ def _trade_action_signals(text):
         for match in pattern.finditer(compact):
             start, end = match.span()
             phrase = match.group(0)
-            around = compact[max(0, start - 1):min(len(compact), end + 1)]
-            # "买卖双方/买卖关系" is not a trading recommendation.
+            around = compact[max(0, start - 2):min(len(compact), end + 2)]
+            prefix = compact[max(0, start - 10):start]
+            suffix = compact[end:end + 10]
+            # Market-flow, price/volume and inability phrases are not explicit
+            # recommendations to buy or sell the named security.
             if "买卖" in around or compact[end:end + 1] == "方":
                 continue
-            prefix = compact[max(0, start - 8):start]
-            suffix = compact[end:end + 8]
+            if direction == "bull" and re.match(
+                r"(?:盘|方|入(?:价|成本|金额|量|额|资金|订单|需求|意愿)|"
+                r"不(?:到|起|动|出|了|进)|难以|无法)", suffix
+            ):
+                continue
+            if direction == "bear" and re.match(
+                r"(?:盘|方|出(?:价|成本|金额|量|额|资金|订单|需求|意愿)|"
+                r"不(?:到|起|动|出|了)|难以|无法)", suffix
+            ):
+                continue
             negated = bool(negation.search(prefix)) or bool(
                 re.match(r"(?:条件未到|时机未到|还不能|暂缓)", suffix)
             )
