@@ -48,8 +48,9 @@ class SyncTests(unittest.TestCase):
     return Response(kw['json'].get('items',[]),len(kw['json'].get('reports',[])),bool(kw['json'].get('ai_status')))
    self.assertEqual(sync_exports(root,post=ok),1)
    self.assertEqual(sync_exports(root,post=ok),0)
-   self.assertEqual(len(calls),1)
+   self.assertEqual(len(calls),2)  # status update, then empty heartbeat on the next poll
    self.assertEqual(calls[0]['ai_status']['status'],'processing')
+   self.assertEqual(calls[1]['items'],[])
 
  def test_no_config_local_only(self):
   with tempfile.TemporaryDirectory() as t:self.assertIsNone(sync_exports(Path(t)))
