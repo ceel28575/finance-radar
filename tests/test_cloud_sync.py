@@ -36,6 +36,23 @@ class SyncTests(unittest.TestCase):
    self.assertEqual(sync_exports(root,post=ok),0)
    self.assertEqual(len(calls),2)
    self.assertEqual(calls[0]['reports'][0]['date'],'2026-10-30')
+ def test_source_items_upload_before_reports(self):
+  with tempfile.TemporaryDirectory() as t:
+   root=Path(t);(root/'exports').mkdir()
+   (root/'cloud-config.json').write_text(json.dumps({'site_url':SITE_URL,'site_token':'test-fixture-not-a-real-secret'}))
+   item={'id':'item-1','published_at':'2026-10-30T09:00:00+08:00','source':'MX','content':'沪电股份低吸'}
+   report={'date':'2026-10-30','generated_at':'2026-10-30T15:10:00+08:00','stocks':[]}
+   (root/'exports/2026-10-30.json').write_text(json.dumps({'items':[item],'reports':[report]}))
+   calls=[]
+   def ok(url,**kw):
+    calls.append(kw['json'])
+    return Response(kw['json'].get('items',[]),len(kw['json'].get('reports',[])))
+   sync_exports(root,post=ok)
+   self.assertEqual(len(calls),2)
+   self.assertEqual(calls[0]['items'][0]['id'],'item-1')
+   self.assertEqual(len(calls[0]['reports']),0)
+   self.assertEqual(len(calls[1]['reports']),1)
+
  def test_ai_status_sync_and_dedupe(self):
   with tempfile.TemporaryDirectory() as t:
    root=Path(t);(root/'exports').mkdir()
