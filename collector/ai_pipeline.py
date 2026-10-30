@@ -906,7 +906,10 @@ def ai_worker(stop, root, api_key):
             conn.close()
         except sqlite3.Error:
             pass
-        print("未提供豆包 API Key：AI 分析未启动；MX 采集与同步不受影响。", flush=True)
+        if API_KEY_ERROR:
+            print("豆包 API Key 启动验证失败：AI 分析未启动；MX 采集与同步不受影响。", flush=True)
+        else:
+            print("未提供豆包 API Key：AI 分析未启动；MX 采集与同步不受影响。", flush=True)
         return
     print(
         "双模型 AI 已启动：本地 %s（Ollama /api/chat） + 云端 %s。"
