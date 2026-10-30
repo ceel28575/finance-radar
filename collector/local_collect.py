@@ -24,7 +24,7 @@ def export_snapshot():
             except (ValueError, TypeError):
                 continue
             blocked_source = " ".join(
-                str(x.get(field) or "") for field in ("source", "room", "author", "room_key")
+                str(x.get(field) or "") for field in ("source", "room", "room_name", "author", "room_key")
             ).lower()
             if "奇幻团课" in blocked_source or "qmxp2077" in blocked_source:
                 continue
