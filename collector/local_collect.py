@@ -7,6 +7,7 @@ from mx_runtime import ROOT, CST
 from mx_collector import db, collect_loop, save_status
 from cloud_sync import sync_exports, SyncError
 from instance_lock import InstanceLock
+from ai_pipeline import ensure_ai_schema, load_api_key, ai_worker
 
 def export_snapshot():
     conn = db()
@@ -54,15 +55,20 @@ def main():
                 break
     worker = threading.Thread(target=loop,daemon=True)
     conn = db()
-    print("Export every 60 seconds. Cloud sync enabled when cloud-config.json is present. AI not connected.")
-    print("Login manually in the browser. Keep this window open.")
+    ensure_ai_schema(conn)
+    print("Export every 60 seconds. Cloud sync enabled when cloud-config.json is present.")
+    print("双模型 AI 会在本机千问与云端豆包之间运行；API Key 仅隐藏输入并保存在本次进程内存。")
+    api_key = load_api_key()
+    ai_thread = threading.Thread(target=ai_worker, args=(stop, ROOT, api_key), daemon=True, name="mx-ai")
     save_status(conn, "collector", {"status": "connected", "stage": "waiting_login", "rooms_total": 0, "rooms_done": 0})
     worker.start()
+    ai_thread.start()
     try:
         collect_loop(conn)
     finally:
         stop.set()
-        worker.join()
+        worker.join(timeout=5)
+        ai_thread.join(timeout=5)
         save_status(conn, "collector", {"status": "stopped", "stage": "stopped"})
         conn.close()
         export_snapshot()
