@@ -20,6 +20,8 @@ jobs:
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Run validation tests
         run: node --test tests/validation.test.mjs
+      - name: Parse active dashboard JavaScript
+        run: node --input-type=module -e "import {readFileSync} from 'node:fs'; const html=readFileSync('dashboard.html','utf8'); const scripts=[...html.matchAll(/<script\\b[^>]*>([\\s\\S]*?)<\\/script>/gi)]; if(!scripts.length) throw new Error('No inline scripts found'); scripts.forEach((m,i)=>new Function(m[1])); console.log('Parsed '+scripts.length+' dashboard script block(s)');"
 
   windows-updater-syntax:
     runs-on: windows-latest
