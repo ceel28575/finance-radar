@@ -103,7 +103,10 @@ def db():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("CREATE TABLE IF NOT EXISTS outbox (source_key TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT, sent_at TEXT, fail_reason TEXT)")
-    conn.execute("CREATE TABLE IF NOT EXISTS rooms (room_key TEXT PRIMARY KEY, name TEXT, loaded_all INTEGER NOT NULL DEFAULT 0, is_dup INTEGER NOT NULL DEFAULT 0, updated_at TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS rooms (room_key TEXT PRIMARY KEY, name TEXT, loaded_all INTEGER NOT NULL DEFAULT 0, is_dup INTEGER NOT NULL DEFAULT 0, updated_at TEXT, history_cursor TEXT)")
+    room_columns = {row[1] for row in conn.execute("PRAGMA table_info(rooms)")}
+    if "history_cursor" not in room_columns:
+        conn.execute("ALTER TABLE rooms ADD COLUMN history_cursor TEXT")
     conn.execute("CREATE TABLE IF NOT EXISTS room_identity (identity_key TEXT PRIMARY KEY, room_key TEXT NOT NULL, room_name TEXT NOT NULL, stable_id TEXT NOT NULL, updated_at TEXT NOT NULL)")
     conn.execute("CREATE TABLE IF NOT EXISTS runtime_status (scope TEXT PRIMARY KEY, value TEXT NOT NULL)")
     conn.commit()
@@ -475,15 +478,53 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
         })
     return items
 
-def load_history(page, loaded_all, conn, room, ocr_budget=None):
-    # 每次入房间都补查，不能因过去追平而忽略断线期间的消息。
-    # 每页先持久化，下一页失败也不丢已经读取的正文。
+def _oldest_message_key(items):
+    if not items:
+        return None
+    dated = [
+        item for item in items
+        if item.get("source_key") and item.get("published_at")
+    ]
+    if dated:
+        return min(dated, key=lambda item: str(item["published_at"]))["source_key"]
+    return items[0].get("source_key")
+
+
+def _save_room_history_state(conn, room, loaded_all, cursor):
+    conn.execute(
+        "INSERT INTO rooms(room_key,name,loaded_all,is_dup,updated_at,history_cursor) "
+        "VALUES(?,?,?,?,?,?) ON CONFLICT(room_key) DO UPDATE SET "
+        "name=excluded.name,loaded_all=excluded.loaded_all,is_dup=excluded.is_dup,"
+        "updated_at=excluded.updated_at,"
+        "history_cursor=COALESCE(excluded.history_cursor,rooms.history_cursor)",
+        (
+            room["room_key"], room["name"], int(bool(loaded_all)),
+            int(bool(room.get("is_dup"))), now_iso(), cursor,
+        ),
+    )
+    conn.commit()
+
+
+def load_history(page, loaded_all, conn, room, ocr_budget=None, history_cursor=None):
+    # Fully backfilled rooms only need their current visible messages on later scans.
     if ocr_budget is None:
         ocr_budget = [24]
-    enqueue(conn, extract_messages(page, room, conn, ocr_budget))
+    items = extract_messages(page, room, conn, ocr_budget)
+    enqueue(conn, items)
+    if loaded_all:
+        return True
+
+    oldest_key = _oldest_message_key(items)
+    cursor_reached = not history_cursor
+    if history_cursor and any(item.get("source_key") == history_cursor for item in items):
+        cursor_reached = True
+    if cursor_reached and oldest_key:
+        _save_room_history_state(conn, room, False, oldest_key)
+
     for _ in range(MAX_LOAD_MORE):
         button = page.get_by_text("加载更早", exact=True)
         if button.count() == 0:
+            _save_room_history_state(conn, room, True, oldest_key or history_cursor)
             return True
         before = page.locator(SEL_MSG).count()
         try:
@@ -493,12 +534,23 @@ def load_history(page, loaded_all, conn, room, ocr_budget=None):
         for _ in range(20):
             page.wait_for_timeout(500)
             if page.locator(SEL_MSG).count() > before:
-                enqueue(conn, extract_messages(page, room, conn, ocr_budget))
+                page_items = extract_messages(page, room, conn, ocr_budget)
+                enqueue(conn, page_items)
+                new_oldest = _oldest_message_key(page_items)
+                if new_oldest:
+                    oldest_key = new_oldest
+                if not cursor_reached and history_cursor:
+                    cursor_reached = any(
+                        item.get("source_key") == history_cursor for item in page_items
+                    )
+                if cursor_reached and oldest_key:
+                    # Save progress only after replaying the previous cursor;
+                    # otherwise a restart could move the cursor forward and skip history.
+                    _save_room_history_state(conn, room, False, oldest_key)
                 break
         else:
-            return False  # 无增长可能是网络慢，不宣称历史已追平
+            return False  # No growth may be a slow network; keep the last safe cursor.
     return False
-
 
 def collect_loop(conn):
     with sync_playwright() as playwright:
@@ -528,8 +580,9 @@ def collect_loop(conn):
                             "rooms_done": 0, "backlog": total, "rooms_unmapped": unmapped, "rooms_duplicate": duplicates})
                 ocr_budget = [MAX_OCR_PER_SCAN]
                 for room in rooms:
-                    progress = conn.execute("SELECT loaded_all FROM rooms WHERE room_key=?", (room["room_key"],)).fetchone()
+                    progress = conn.execute("SELECT loaded_all,history_cursor FROM rooms WHERE room_key=?", (room["room_key"],)).fetchone()
                     loaded_all = bool(progress[0]) if progress else False
+                    history_cursor = progress[1] if progress else None
                     try:
                         click_room(page, room)
                     except Exception as error:
@@ -548,10 +601,14 @@ def collect_loop(conn):
                     page.wait_for_timeout(1200)
                     # One shared budget across the whole sweep prevents 100+ rooms
                     # from triggering thousands of CPU OCR calls in a single round.
-                    loaded_all = load_history(page, loaded_all, conn, room, ocr_budget)
+                    loaded_all = load_history(page, loaded_all, conn, room, ocr_budget, history_cursor)
                     enqueue(conn, extract_messages(page, room, conn, ocr_budget))
-                    conn.execute("INSERT OR REPLACE INTO rooms (room_key, name, loaded_all, is_dup, updated_at) VALUES (?,?,?,?,?)",
-                                 (room["room_key"], room["name"], int(loaded_all), int(room["is_dup"]), now_iso()))
+                    conn.execute(
+                        "INSERT INTO rooms (room_key,name,loaded_all,is_dup,updated_at) VALUES (?,?,?,?,?) "
+                        "ON CONFLICT(room_key) DO UPDATE SET name=excluded.name,loaded_all=excluded.loaded_all,"
+                        "is_dup=excluded.is_dup,updated_at=excluded.updated_at",
+                        (room["room_key"], room["name"], int(loaded_all), int(room["is_dup"]), now_iso()),
+                    )
                     conn.commit()
                     done += 1
                     history_done += int(loaded_all)
