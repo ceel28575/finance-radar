@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {normalizeBatch,normalizeAIStatus,dayOf} from '../lib/radar-validation.mjs';
+import {normalizeBatch,normalizeAIStatus,normalizeCollectorStatus,dayOf} from '../lib/radar-validation.mjs';
 const item={id:'a',source:'MX',room:'测试房间',content:'正文',published_at:'2026-10-26T22:15:00Z'};
 test('CST archive and room source',()=>{const x=normalizeBatch({items:[item]});assert.equal(x.items[0].source,'测试房间');assert.equal(dayOf(x.items[0].published_at),'2026-10-27')});
 test('blocked sources excluded server side',()=>assert.equal(normalizeBatch({items:[{...item,author:'qmxp2077'}]}).items.length,0));
@@ -25,4 +25,14 @@ test('blocked keywords in unrelated message text are not treated as blocked sour
 });
 test('blocked room names remain excluded',()=>{
  assert.equal(normalizeBatch({items:[{...item,room:'奇幻团课'}]}).items.length,0);
+});
+
+test('MX collector scan progress is validated and retained',()=>{
+ const scan={status:'collecting',stage:'scanning',updated_at:'2026-10-30T15:00:00+08:00',rooms_total:135,rooms_done:72,backlog:63,rooms_unmapped:1,rooms_duplicate:6,last_error:''};
+ const normalized=normalizeBatch({items:[],reports:[],collector_status:scan});
+ assert.equal(normalized.collector_status.rooms_total,135);
+ assert.equal(normalized.collector_status.rooms_duplicate,6);
+});
+test('invalid collector scan counters are rejected',()=>{
+ assert.throws(()=>normalizeCollectorStatus({status:'collecting',stage:'scan',updated_at:'2026-10-30T15:00:00+08:00',rooms_done:-1}));
 });
