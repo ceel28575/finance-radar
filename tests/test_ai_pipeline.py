@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ai_pipeline import (
-    _save_pool_once, _get_pool, _trade_action_signals,
+    _save_pool_once, _get_pool, _trade_action_signals, _clean_company_name, _normalize_stocks,
     _action_based_candidates, _merge_action_candidates, worker_delay,
     _collector_round_complete, _ollama_runtime_status, next_run_delay,
 )
@@ -52,6 +52,29 @@ class AIPipelineTests(unittest.TestCase):
         self.assertIn(("bear", "卖", True), compact)
         self.assertIn(("bull", "低吸", False), compact)
         self.assertIn(("bear", "高抛", False), compact)
+
+    def test_company_names_strip_tickers_and_exchange_suffixes(self):
+        self.assertEqual(_clean_company_name("沪电股份（002463.SZ）"), "沪电股份")
+        self.assertEqual(_clean_company_name("002463.SZ 沪电股份"), "沪电股份")
+        self.assertEqual(_clean_company_name("沪电股份002463"), "沪电股份")
+        stocks = _normalize_stocks([{
+            "name": "沪电股份（002463.SZ）", "direction": "bull",
+            "reason": "原文支持", "evidence_ids": ["source-1"],
+        }], {"source-1"})
+        self.assertEqual(stocks[0]["name"], "沪电股份")
+
+    def test_action_candidates_match_cleaned_company_name(self):
+        rows = [{
+            "source": {
+                "id": "ticker-name", "published_at": "2026-10-30T10:00:00+08:00",
+                "content": "沪电股份（002463.SZ）低吸",
+            },
+            "local_analysis": {
+                "companies": ["沪电股份（002463.SZ）"], "relevance": 4,
+            },
+        }]
+        candidates = _action_based_candidates(rows)
+        self.assertEqual(candidates[0]["name"], "沪电股份")
 
     def test_market_flow_and_non_action_phrases_are_not_trade_signals(self):
         signals = _trade_action_signals(
