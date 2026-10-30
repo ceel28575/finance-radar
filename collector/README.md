@@ -1,5 +1,7 @@
 # MX 采集与云端同步
 
+旧版首次启用自动升级：若当前 `collector` 文件夹中还没有 `update.bat`，先下载 [update.bat](https://raw.githubusercontent.com/ceel28575/finance-radar/main/collector/update.bat) 并保存到当前 `collector` 文件夹；此后只需双击它即可。它会自动下载最新更新脚本与源码。
+
 1. 首次安装运行 `setup.bat`（已安装的依赖可复用）；后续升级先关闭采集器及其打开的 MX 浏览器，再双击 `update.bat`，程序会自动下载 GitHub 最新代码、备份本机数据、保留登录档案/数据库/同步配置/虚拟环境、更新依赖并运行测试，成功后自动启动新版采集器。
 2. 在私有网站的「采集与设置」下载 `cloud-config.json`，放在本目录，不要改名。
 3. 关闭旧采集器及它打开的浏览器后，运行 `start.bat`。在程序打开的 MX 网页手动登录。登录会话仅保存于本机 `mx_profile`。
