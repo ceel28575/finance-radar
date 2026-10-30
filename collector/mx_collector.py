@@ -227,8 +227,15 @@ def discover_rooms(page):
         """(elements, selectors) => elements.map((element, index) => {
             const name = element.querySelector(selectors.name);
             const latest = element.querySelector(selectors.time);
+            const attrs = ['data-room-id', 'data-id', 'data-chat-id', 'data-conversation-id', 'href'];
+            let stable_id = null;
+            for (const attr of attrs) {
+                const value = element.getAttribute(attr) || (element.querySelector('a[href]') && attr === 'href' ? element.querySelector('a[href]').getAttribute('href') : null);
+                if (value && value.trim()) { stable_id = attr + ':' + value.trim(); break; }
+            }
             return {name: name ? (name.innerText || name.textContent || '').trim() : '',
                     latest_raw: latest ? latest.getAttribute('datetime') : null,
+                    stable_id,
                     dom_index: index + 1};
         })""", {"name": SEL_ROOM_NAME, "time": SEL_ROOM_TIME})
     for entry in snapshot:
@@ -239,15 +246,24 @@ def discover_rooms(page):
             latest_ms = int(entry["latest_raw"]) if entry.get("latest_raw") else None
         except (ValueError, TypeError):
             latest_ms = None
-        rooms.append({"name": name, "latest_ms": latest_ms,
-                      "is_dup": False, "room_key": name, "dom_index": entry["dom_index"]})
+        rooms.append({
+            "name": name, "latest_ms": latest_ms,
+            "is_dup": False, "room_key": name, "dom_index": entry["dom_index"],
+            "stable_id": str(entry.get("stable_id") or "")[:180],
+        })
     counts = {}
+    stable_counts = {}
     for room in rooms:
         counts[room["name"]] = counts.get(room["name"], 0) + 1
+        if room["stable_id"]:
+            stable_counts[(room["name"], room["stable_id"])] = stable_counts.get((room["name"], room["stable_id"]), 0) + 1
     for room in rooms:
         if counts[room["name"]] > 1:
             room["is_dup"] = True
-            room["room_key"] = "%s#%d" % (room["name"], room["dom_index"])
+            if room["stable_id"] and stable_counts.get((room["name"], room["stable_id"])) == 1:
+                room["room_key"] = "%s#id:%s" % (room["name"], room["stable_id"])
+            else:
+                room["room_key"] = "%s#dom:%d" % (room["name"], room["dom_index"])
     if counts.get("到期待上新", 0):
         print("本轮发现“到期待上新”%d 个；重名房间按 DOM 序号临时区分，稳定映射仍待核实。" % counts["到期待上新"])
     rooms.sort(key=lambda room: -(room["latest_ms"] or 0))
@@ -255,20 +271,67 @@ def discover_rooms(page):
 
 
 def click_room(page, room):
+    # Unique names are resolved by exact text. Duplicate names use a stable DOM
+    # attribute when present, otherwise the captured row index plus a name/time
+    # recheck. This avoids silently dropping duplicate rooms while refusing a
+    # click if the room list changed underneath the snapshot.
     if room.get("is_dup"):
-        raise ValueError("duplicate room identity is unresolved")
-    # Resolve title text in Python, avoiding nested relative-locator matching.
-    # Do not fall back to a guessed room index or force-click hidden elements.
-    titles = page.locator(SEL_ROOM_NAME)
-    names = titles.all_inner_texts()
-    matches = [i for i, name in enumerate(names) if name.strip() == room["name"].strip()]
-    if len(matches) != 1:
-        print("房间定位失败：标题总数=%d，精确匹配数=%d。" % (len(names), len(matches)), flush=True)
-        raise ValueError("room title is missing or not unique")
-    target = titles.nth(matches[0])
+        rows = page.locator(SEL_ROOM)
+        chosen_index = None
+        stable_id = str(room.get("stable_id") or "")
+        if stable_id:
+            matches = rows.evaluate_all(
+                """(elements, selectors) => elements.map((element, index) => {
+                    const attrs = ['data-room-id', 'data-id', 'data-chat-id', 'data-conversation-id', 'href'];
+                    let stable_id = null;
+                    for (const attr of attrs) {
+                        const value = element.getAttribute(attr) || (element.querySelector('a[href]') && attr === 'href' ? element.querySelector('a[href]').getAttribute('href') : null);
+                        if (value && value.trim()) { stable_id = attr + ':' + value.trim(); break; }
+                    }
+                    const name = element.querySelector(selectors.name);
+                    return {index, stable_id, name: name ? (name.innerText || name.textContent || '').trim() : ''};
+                })""",
+                {"name": SEL_ROOM_NAME},
+            )
+            indexes = [
+                row["index"] for row in matches
+                if row.get("stable_id") == stable_id and row.get("name") == room["name"]
+            ]
+            if len(indexes) == 1:
+                chosen_index = indexes[0]
+        if chosen_index is None:
+            try:
+                chosen_index = int(room.get("dom_index", 0)) - 1
+            except (TypeError, ValueError):
+                chosen_index = -1
+        if chosen_index < 0 or chosen_index >= rows.count():
+            raise ValueError("duplicate room row index is no longer available")
+        row = rows.nth(chosen_index)
+        title = row.locator(SEL_ROOM_NAME)
+        if title.count() != 1 or title.inner_text().strip() != room["name"].strip():
+            raise ValueError("duplicate room row changed before click")
+        if room.get("latest_ms") is not None:
+            time_node = row.locator(SEL_ROOM_TIME)
+            if time_node.count() == 1:
+                raw = time_node.get_attribute("datetime")
+                try:
+                    current_latest = int(raw) if raw else None
+                except (TypeError, ValueError):
+                    current_latest = None
+                if current_latest is not None and current_latest != room["latest_ms"]:
+                    raise ValueError("duplicate room latest timestamp changed before click")
+        target = title
+    else:
+        titles = page.locator(SEL_ROOM_NAME)
+        names = titles.all_inner_texts()
+        matches = [i for i, name in enumerate(names) if name.strip() == room["name"].strip()]
+        if len(matches) != 1:
+            print("房间定位失败：标题总数=%d，精确匹配数=%d。" % (len(names), len(matches)), flush=True)
+            raise ValueError("room title is missing or not unique")
+        target = titles.nth(matches[0])
+        if target.inner_text().strip() != room["name"].strip():
+            raise ValueError("room list changed before click")
     target.scroll_into_view_if_needed(timeout=10000)
-    if target.inner_text().strip() != room["name"].strip():
-        raise ValueError("room list changed before click")
     target.click(timeout=10000)
 
 
