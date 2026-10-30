@@ -262,7 +262,7 @@ def discover_rooms(page, conn=None):
             # previously collected messages after this upgrade.
             room["room_key"] = "%s#%d" % (room["name"], room["dom_index"])
     if counts.get("到期待上新", 0):
-        print("本轮发现“到期待上新”%d 个；重名房间按 DOM 序号临时区分，稳定映射仍待核实。" % counts["到期待上新"])
+        print("本轮发现“到期待上新”%d 个；重名房间优先按唯一 DOM ID 保持身份，无唯一 ID 时按 DOM 序号临时区分。" % counts["到期待上新"])
     if conn is not None:
         apply_room_identity(conn, rooms)
     rooms.sort(key=lambda room: -(room["latest_ms"] or 0))
