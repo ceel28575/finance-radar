@@ -446,14 +446,8 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
 
         # Keep the same source key before/after OCR; OCR text is content, not identity.
         identity_content = text or "[媒体消息无正文，待解析]"
-        fingerprint = identity_content if not media else identity_content + json.dumps(media, ensure_ascii=False, sort_keys=True)
-        key = "%s|%s|%s" % (
-            room["room_key"],
-            published_at or ("raw:" + (raw_time or "null")),
-            hashlib.md5(fingerprint.encode("utf-8")).hexdigest(),
-        )
-        # The history cursor must survive inferred HH:MM dates rolling over
-        # at midnight and expiring image URL query parameters.
+        # Ignore expiring image URL query strings for identity, while retaining
+        # the actual URL in the uploaded media payload.
         cursor_media = [
             {
                 "type": media_item["type"],
@@ -461,6 +455,16 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
             }
             for media_item in media
         ]
+        fingerprint = identity_content if not media else identity_content + json.dumps(cursor_media, ensure_ascii=False, sort_keys=True)
+        key_time = (
+            "raw:" + (raw_time or "unknown")
+            if rule == "collected_at_fallback"
+            else (published_at or ("raw:" + (raw_time or "null")))
+        )
+        key = "%s|%s|%s" % (
+            room["room_key"], key_time,
+            hashlib.md5(fingerprint.encode("utf-8")).hexdigest(),
+        )
         history_fingerprint = json.dumps(
             [raw_time, sender[:80], identity_content, cursor_media],
             ensure_ascii=False, sort_keys=True,
@@ -475,6 +479,10 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
                 try:
                     previous_payload = json.loads(previous[0])
                     previous_parse_status = str(previous_payload.get("parse_status") or "")
+                    if rule == "collected_at_fallback" and previous_payload.get("published_at"):
+                        # Preserve the first collection-time archive stamp so a
+                        # timestamp-less message does not move or re-upload every minute.
+                        published_at = str(previous_payload["published_at"])
                     if previous_parse_status == "ocr_done":
                         previous_content = str(previous_payload.get("content") or "")
                 except (TypeError, ValueError):
