@@ -16,7 +16,7 @@ import requests
 from playwright.sync_api import sync_playwright
 from mx_runtime import ROOT, CST, load_runtime
 from mx_transport import safe_post
-from mx_ocr import find_tesseract, ocr_image_bytes
+from mx_ocr import MAX_IMAGE_BYTES, find_tesseract, ocr_image_bytes
 
 INGEST_URL = HEARTBEAT_URL = TOKEN = ""
 PROFILE = str(ROOT / "mx_profile")
@@ -388,7 +388,16 @@ def _ocr_image_from_page(page, src, executable):
         response = page.request.get(src, timeout=8000)
         if not response.ok or not response.headers.get("content-type", "").lower().startswith("image/"):
             return ""
-        return ocr_image_bytes(response.body(), executable=executable)
+        content_length = response.headers.get("content-length")
+        try:
+            if content_length and int(content_length) > MAX_IMAGE_BYTES:
+                return ""
+        except (TypeError, ValueError):
+            pass
+        image_bytes = response.body()
+        if len(image_bytes) > MAX_IMAGE_BYTES:
+            return ""
+        return ocr_image_bytes(image_bytes, executable=executable)
     except Exception:
         return ""
 
