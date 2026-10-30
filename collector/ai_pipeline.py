@@ -471,6 +471,18 @@ def _verify_doubao_key(api_key):
     _doubao_text(response)
 
 
+def _clean_company_name(value):
+    name = str(value or "").strip()
+    name = re.sub(
+        r"[（(]?\s*(?<!\d)\d{6}(?:\.(?:SZ|SH|BJ))?(?!\d)\s*[）)]?",
+        "",
+        name,
+        flags=re.I,
+    )
+    name = re.sub(r"\s+", " ", name).strip(" -_()（）[]【】")
+    return name
+
+
 def _normalize_stocks(value, allowed_ids):
     result = []
     if not isinstance(value, list):
@@ -478,7 +490,7 @@ def _normalize_stocks(value, allowed_ids):
     for row in value[:40]:
         if not isinstance(row, dict):
             continue
-        name = re.sub(r"\b\d{6}\b", "", str(row.get("name") or "")).strip(" -_()（）")
+        name = _clean_company_name(row.get("name"))
         if not name or len(name) > 100:
             continue
         direction = row.get("direction")
@@ -665,11 +677,10 @@ def _action_based_candidates(analyses):
         local = row.get("local_analysis") or {}
         content = str(source.get("content") or "")
         companies = local.get("companies") if isinstance(local.get("companies"), list) else []
-        companies = [
-            str(name).strip() for name in companies
-            if isinstance(name, str) and 2 <= len(name.strip()) <= 40
-            and not re.fullmatch(r"\d{6}", name.strip())
-        ]
+        companies = list(dict.fromkeys(
+            _clean_company_name(name) for name in companies
+            if isinstance(name, str) and 2 <= len(_clean_company_name(name)) <= 40
+        ))
         if not content or not companies:
             continue
         clauses = [part.strip() for part in re.split(r"[，,；;。！？!?\n]+", content) if part.strip()]
