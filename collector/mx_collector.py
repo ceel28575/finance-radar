@@ -294,6 +294,7 @@ def _ocr_image_from_page(page, src, executable):
 def extract_messages(page, room):
     items = []
     ocr_executable = find_tesseract()
+    ocr_budget = 8
     for row in page.query_selector_all(SEL_MSG):
         text = "\n".join(element.inner_text().strip() for element in row.query_selector_all(SEL_TEXT)).strip()
         media = []
@@ -303,7 +304,8 @@ def extract_messages(page, room):
             if src:
                 full_src = urljoin(page.url, src)
                 media.append({"type": "image", "src": full_src})
-                if ocr_executable and len(ocr_texts) < 3:
+                if ocr_executable and ocr_budget > 0 and len(ocr_texts) < 3:
+                    ocr_budget -= 1
                     recognized = _ocr_image_from_page(page, full_src, ocr_executable)
                     if recognized:
                         ocr_texts.append(recognized)
@@ -332,7 +334,10 @@ def extract_messages(page, room):
             parse_status = "ocr_done" if ocr_texts else "ocr_pending"
         else:
             parse_status = "link_pending" if types == {"link"} else ("attachment_pending" if media else "text_ok")
-        fingerprint = content if not media else content + json.dumps(media, ensure_ascii=False, sort_keys=True)
+        # Keep message identity independent of OCR output so a later successful
+        # OCR pass updates the existing row instead of creating a duplicate.
+        identity_content = text or "[媒体消息无正文，待解析]"
+        fingerprint = identity_content if not media else identity_content + json.dumps(media, ensure_ascii=False, sort_keys=True)
         key = "%s|%s|%s" % (room["room_key"], published_at or ("raw:" + (raw_time or "null")), hashlib.md5(fingerprint.encode("utf-8")).hexdigest())
         items.append({
             "item_type": "chat", "source_key": key, "source": "MX", "room": room["name"],
