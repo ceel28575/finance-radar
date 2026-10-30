@@ -33,6 +33,7 @@ def export_snapshot():
             days.setdefault(day, []).append(x)
         reports_by_day = {}
         ai_status = None
+        collector_status = None
         try:
             for raw_day, raw_report in conn.execute(
                 "SELECT date,payload FROM ai_reports ORDER BY generated_at"
@@ -46,6 +47,9 @@ def export_snapshot():
                 ai_status = json.loads(row[0])
                 if isinstance(ai_status, dict):
                     ai_status["ocr_available"] = bool(find_tesseract())
+            row = conn.execute("SELECT value FROM runtime_status WHERE scope='collector'").fetchone()
+            if row:
+                collector_status = json.loads(row[0])
         except Exception:
             # AI tables may not exist during the very first collector boot.
             pass
@@ -61,6 +65,7 @@ def export_snapshot():
                         "items": days.get(day, []),
                         "reports": reports_by_day.get(day, []),
                         "ai_status": ai_status,
+                        "collector_status": collector_status,
                     },
                     ensure_ascii=False,
                 ),
