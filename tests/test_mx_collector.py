@@ -1,11 +1,41 @@
 import sqlite3
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collector"))
 
-from mx_collector import apply_room_identity
+from mx_collector import apply_room_identity, load_history, _oldest_message_key
+
+
+class FakeLocator:
+    def __init__(self, page):
+        self.page = page
+    def count(self):
+        return len(self.page.pages[self.page.index])
+
+
+class FakeButton:
+    def __init__(self, page):
+        self.page = page
+        self.first = self
+    def count(self):
+        return 1 if self.page.index < len(self.page.pages) - 1 else 0
+    def click(self, timeout=5000):
+        self.page.index += 1
+
+
+class FakePage:
+    def __init__(self, pages):
+        self.pages = pages
+        self.index = 0
+    def get_by_text(self, text, exact=True):
+        return FakeButton(self)
+    def locator(self, selector):
+        return FakeLocator(self)
+    def wait_for_timeout(self, milliseconds):
+        return None
 
 
 class MXRoomIdentityTests(unittest.TestCase):
@@ -18,6 +48,63 @@ class MXRoomIdentityTests(unittest.TestCase):
 
     def tearDown(self):
         self.conn.close()
+
+    def test_history_backfill_resumes_from_saved_cursor_and_finishes(self):
+        self.conn.execute(
+            "CREATE TABLE rooms (room_key TEXT PRIMARY KEY,name TEXT,loaded_all INTEGER,"
+            "is_dup INTEGER,updated_at TEXT,history_cursor TEXT)"
+        )
+        room = {"room_key": "重复房间#1", "name": "重复房间", "is_dup": True}
+        self.conn.execute(
+            "INSERT INTO rooms(room_key,name,loaded_all,is_dup,history_cursor) VALUES(?,?,?,?,?)",
+            (room["room_key"], room["name"], 0, 1, "cursor"),
+        )
+        pages = [
+            [{"source_key": "new", "published_at": "2026-10-30T10:00:00+00:00"}],
+            [
+                {"source_key": "cursor", "published_at": "2026-10-30T09:00:00+00:00"},
+                {"source_key": "new", "published_at": "2026-10-30T10:00:00+00:00"},
+            ],
+            [
+                {"source_key": "oldest", "published_at": "2026-10-30T08:00:00+00:00"},
+                {"source_key": "cursor", "published_at": "2026-10-30T09:00:00+00:00"},
+                {"source_key": "new", "published_at": "2026-10-30T10:00:00+00:00"},
+            ],
+        ]
+        page = FakePage(pages)
+        with patch("mx_collector.extract_messages", side_effect=lambda p, *args: p.pages[p.index]), patch(
+            "mx_collector.enqueue"
+        ):
+            complete = load_history(page, False, self.conn, room, [0], "cursor")
+        self.assertTrue(complete)
+        self.assertEqual(page.index, 2)
+        saved = self.conn.execute(
+            "SELECT loaded_all,history_cursor FROM rooms WHERE room_key=?",
+            (room["room_key"],),
+        ).fetchone()
+        self.assertEqual(saved, (1, "oldest"))
+
+    def test_loaded_room_does_not_repeat_full_history_backfill(self):
+        self.conn.execute(
+            "CREATE TABLE rooms (room_key TEXT PRIMARY KEY,name TEXT,loaded_all INTEGER,"
+            "is_dup INTEGER,updated_at TEXT,history_cursor TEXT)"
+        )
+        room = {"room_key": "room", "name": "room", "is_dup": False}
+        page = FakePage([[{"source_key": "latest", "published_at": "2026-10-30T10:00:00+00:00"}],
+                         [{"source_key": "older", "published_at": "2026-10-30T09:00:00+00:00"}]])
+        with patch("mx_collector.extract_messages", side_effect=lambda p, *args: p.pages[p.index]), patch(
+            "mx_collector.enqueue"
+        ) as enqueue_mock:
+            self.assertTrue(load_history(page, True, self.conn, room, [0], "older"))
+        self.assertEqual(page.index, 0)
+        enqueue_mock.assert_called_once()
+
+    def test_oldest_message_cursor_uses_earliest_timestamp(self):
+        items = [
+            {"source_key": "new", "published_at": "2026-10-30T10:00:00+00:00"},
+            {"source_key": "old", "published_at": "2026-10-30T08:00:00+00:00"},
+        ]
+        self.assertEqual(_oldest_message_key(items), "old")
 
     def test_duplicate_room_keys_survive_dom_reordering(self):
         first_scan = [
