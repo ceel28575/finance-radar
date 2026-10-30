@@ -63,6 +63,18 @@ class AIPipelineTests(unittest.TestCase):
         }], {"source-1"})
         self.assertEqual(stocks[0]["name"], "沪电股份")
 
+    def test_model_stock_duplicates_merge_evidence_and_conflicts_are_excluded(self):
+        rows = [
+            {"name": "甲公司", "direction": "bull", "score": 60, "reason": "a", "evidence_ids": ["a"]},
+            {"name": "甲公司", "direction": "bull", "score": 75, "reason": "b", "evidence_ids": ["b"]},
+            {"name": "乙公司", "direction": "bull", "score": 80, "reason": "c", "evidence_ids": ["c"]},
+            {"name": "乙公司", "direction": "bear", "score": 80, "reason": "d", "evidence_ids": ["d"]},
+        ]
+        normalized = _normalize_stocks(rows, {"a", "b", "c", "d"})
+        self.assertEqual([row["name"] for row in normalized], ["甲公司"])
+        self.assertEqual(normalized[0]["score"], 75)
+        self.assertEqual(normalized[0]["evidence_ids"], ["a", "b"])
+
     def test_action_candidates_match_cleaned_company_name(self):
         rows = [{
             "source": {
