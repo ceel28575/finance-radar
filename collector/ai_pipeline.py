@@ -631,8 +631,8 @@ def run_ai_cycle(root, api_key):
         # after-close pool exists (e.g. first deployment day). Never overwrite it
         # during later intraday refreshes.
         today_pool = _get_pool(conn, today)
-        if today_pool is None and model_report.get("stocks"):
-            today_pool = _save_pool_once(conn, today, model_report["stocks"], generated_at)
+        if today_pool is None:
+            today_pool = _save_pool_once(conn, today, model_report.get("stocks", []), generated_at)
         today_stocks = today_pool.get("stocks", []) if today_pool else []
 
         current_report = dict(model_report, date=today, stocks=today_stocks)
