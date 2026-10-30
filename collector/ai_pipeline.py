@@ -272,7 +272,14 @@ def _call_qwen(items):
             "raw_time": str(item.get("raw_time") or "")[:60],
             "time_rule": str(item.get("time_rule") or "")[:40],
             "content": str(item.get("content") or "")[:900],
-            "trade_action_signals": _trade_action_signals(item.get("content")),
+            "trade_action_signals": [
+                {
+                    "direction": signal["direction"],
+                    "phrase": signal["phrase"],
+                    "negated": signal["negated"],
+                }
+                for signal in _trade_action_signals(item.get("content"))[:8]
+            ],
             "has_images": any(
                 isinstance(media, dict) and media.get("type") == "image"
                 for media in (item.get("media") or [])
