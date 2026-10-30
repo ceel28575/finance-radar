@@ -74,12 +74,21 @@ def ensure_ai_schema(conn):
 
 def load_api_key():
     key = os.environ.get("ARK_API_KEY", "").strip()
-    if key:
-        return key
-    try:
-        key = getpass.getpass("请输入豆包 API Key（隐藏输入，仅保存在本次运行内存）：").strip()
-    except (EOFError, KeyboardInterrupt):
+    if not key:
+        try:
+            key = getpass.getpass("请输入豆包 API Key（隐藏输入，仅保存在本次运行内存）：").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+    if not key:
         return ""
+    # Validate the exact key through the exact transport used by production calls.
+    # This catches terminal paste/input issues before the long-running worker starts.
+    try:
+        _verify_doubao_key(key)
+    except AIError as error:
+        print("豆包 API Key 启动验证失败：%s" % error, flush=True)
+        return ""
+    print("豆包 API Key 启动验证成功；后续研判复用同一认证方式。", flush=True)
     return key
 
 
@@ -369,6 +378,21 @@ def _doubao_text(response):
     return "\n".join(chunks)
 
 
+def _verify_doubao_key(api_key):
+    """Preflight the exact endpoint, model, auth header, and curl transport once."""
+    payload = {
+        "model": ARK_MODEL,
+        "input": [{
+            "role": "user",
+            "content": [{"type": "input_text", "text": "仅回复 OK"}],
+        }],
+        "max_output_tokens": 16,
+    }
+    response = _curl_post_json(ARK_URL, api_key, payload, timeout=45)
+    # A 2xx without usable model output is not a successful preflight.
+    _doubao_text(response)
+
+
 def _normalize_stocks(value, allowed_ids):
     result = []
     if not isinstance(value, list):
@@ -603,7 +627,12 @@ def run_ai_cycle(root, api_key):
 
         previous = _latest_report(conn, today) or {}
         model_report = _call_doubao(api_key, today, generated_at, analyses, previous)
+        # Bootstrap today's frozen pool on first successful report when no prior
+        # after-close pool exists (e.g. first deployment day). Never overwrite it
+        # during later intraday refreshes.
         today_pool = _get_pool(conn, today)
+        if today_pool is None and model_report.get("stocks"):
+            today_pool = _save_pool_once(conn, today, model_report["stocks"], generated_at)
         today_stocks = today_pool.get("stocks", []) if today_pool else []
 
         current_report = dict(model_report, date=today, stocks=today_stocks)
