@@ -41,12 +41,22 @@ def sync_exports(root, stop=None, post=None):
     uploaded = 0
     try:
         pending = []
+        pending_reports = []
         for file in sorted((root / 'exports').glob('????-??-??.json')):
-            for item in json.loads(file.read_text(encoding='utf-8'))['items']:
+            snapshot = json.loads(file.read_text(encoding='utf-8'))
+            for item in snapshot.get('items', []):
                 digest = fingerprint(item)
                 old = conn.execute('SELECT hash FROM synced WHERE target=? AND id=?', (target,item['id'])).fetchone()
                 if not old or old[0] != digest:
                     pending.append((item,digest))
+            for report in snapshot.get('reports', []):
+                report_id = 'report:' + str(report.get('date', '')) + '|' + str(report.get('generated_at', ''))
+                if report_id == 'report:|':
+                    continue
+                digest = fingerprint(report)
+                old = conn.execute('SELECT hash FROM synced WHERE target=? AND id=?', (target,report_id)).fetchone()
+                if not old or old[0] != digest:
+                    pending_reports.append((report_id,report,digest))
         batches, batch, size = [], [], 0
         for record in pending:
             n = len(json.dumps(record[0], ensure_ascii=False).encode())
@@ -57,8 +67,34 @@ def sync_exports(root, stop=None, post=None):
             batch.append(record);size+=n
         if batch:
             batches.append(batch)
-        if not batches:
-            batches=[[]]  # heartbeat, even when there is no new message
+        # Reports are uploaded separately because the site accepts at most 20 per request.
+        for offset in range(0, len(pending_reports), 20):
+            report_batch = pending_reports[offset:offset + 20]
+            if stop and stop.is_set():
+                break
+            response = post(
+                SITE_URL + '/api/radar/ingest',
+                headers={'OAI-Sites-Authorization':'Bearer '+config['site_token']},
+                json={'items': [], 'reports': [r[1] for r in report_batch], 'client':'collector'},
+                timeout=(10,30), allow_redirects=False,
+            )
+            if response.status_code in (401,403) or 300 <= response.status_code < 400:
+                raise SyncError('同步授权已失效，请登录网页重新下载同步配置')
+            response.raise_for_status()
+            result = response.json()
+            if result.get('ok') is not True or result.get('reports') != len(report_batch):
+                raise SyncError('报告未获服务确认，保留本机等待重试')
+            for report_id, report, digest in report_batch:
+                conn.execute(
+                    'INSERT INTO synced(target,id,hash) VALUES(?,?,?) '
+                    'ON CONFLICT(target,id) DO UPDATE SET hash=excluded.hash',
+                    (target, report_id, digest),
+                )
+            conn.commit()
+            uploaded += len(report_batch)
+
+        if not batches and not pending_reports:
+            batches=[[]]  # heartbeat, even when there is no new message or report
         for batch in batches:
             if stop and stop.is_set():
                 break
@@ -80,7 +116,7 @@ def sync_exports(root, stop=None, post=None):
             conn.commit()
             if accepted != expected:
                 raise SyncError('部分记录未接收，请检查来源过滤与数据格式')
-        print('Cloud sync complete:',uploaded,'new/updated items',flush=True)
+        print('Cloud sync complete:',uploaded,'new/updated items/reports',flush=True)
         return uploaded
     finally:
         conn.close()
