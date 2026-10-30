@@ -89,6 +89,13 @@ class AIPipelineTests(unittest.TestCase):
         candidates = _action_based_candidates(rows)
         self.assertEqual(candidates[0]["name"], "沪电股份")
 
+    def test_institutional_flow_is_not_misread_as_a_recommendation(self):
+        signals = _trade_action_signals(
+            "甲公司主力资金买入；乙公司北向资金买入；丙公司买入压力增大；丁公司建议买入"
+        )
+        active = [(x["direction"], x["phrase"]) for x in signals if not x["negated"]]
+        self.assertEqual(active, [("bull", "买入")])
+
     def test_market_flow_and_non_action_phrases_are_not_trade_signals(self):
         signals = _trade_action_signals(
             "甲公司买盘增加；乙公司买入价上涨；丙公司买不到；丁公司低吸；"
