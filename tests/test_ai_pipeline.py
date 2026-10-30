@@ -7,7 +7,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'collector'))
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from ai_pipeline import _save_pool_once, _get_pool, _trade_action_signals, next_run_delay
+from ai_pipeline import (
+    _save_pool_once, _get_pool, _trade_action_signals,
+    _action_based_candidates, _merge_action_candidates, worker_delay, next_run_delay,
+)
 
 CST = ZoneInfo("Asia/Shanghai")
 
@@ -29,14 +32,11 @@ class AIPipelineTests(unittest.TestCase):
         self.assertEqual(again["stocks"], first)
         self.assertEqual(_get_pool(self.conn, "2026-10-30")["stocks"], first)
 
-    def test_empty_daily_pool_can_be_filled_once(self):
+    def test_empty_daily_pool_is_frozen_too(self):
         first = [{"name": "甲公司", "direction": "bull", "evidence_ids": ["a"]}]
-        later = [{"name": "乙公司", "direction": "bear", "evidence_ids": ["b"]}]
         _save_pool_once(self.conn, "2026-10-30", [], "2026-10-29T15:10:00+08:00")
-        filled = _save_pool_once(self.conn, "2026-10-30", first, "2026-10-30T10:00:00+08:00")
-        unchanged = _save_pool_once(self.conn, "2026-10-30", later, "2026-10-30T11:00:00+08:00")
-        self.assertEqual(filled["stocks"], first)
-        self.assertEqual(unchanged["stocks"], first)
+        unchanged = _save_pool_once(self.conn, "2026-10-30", first, "2026-10-30T10:00:00+08:00")
+        self.assertEqual(unchanged["stocks"], [])
 
     def test_trade_action_keywords_are_exposed_with_negation_context(self):
         signals = _trade_action_signals(
@@ -49,6 +49,68 @@ class AIPipelineTests(unittest.TestCase):
         self.assertIn(("bear", "卖", True), compact)
         self.assertIn(("bull", "低吸", False), compact)
         self.assertIn(("bear", "高抛", False), compact)
+
+    def test_action_candidates_map_buy_and_sell_to_the_named_company(self):
+        rows = [
+            {
+                "source": {
+                    "id": "msg-1",
+                    "published_at": "2026-10-30T09:31:00+08:00",
+                    "content": "沪电股份低吸；生益电子高抛",
+                },
+                "local_analysis": {
+                    "companies": ["沪电股份", "生益电子"],
+                    "relevance": 5,
+                    "summary": "PCB相关操作观点",
+                },
+            }
+        ]
+        candidates = _action_based_candidates(rows)
+        self.assertEqual({x["name"]: x["direction"] for x in candidates},
+                         {"沪电股份": "bull", "生益电子": "bear"})
+        self.assertTrue(all(x["evidence_ids"] == ["msg-1"] for x in candidates))
+
+    def test_action_candidates_ignore_negation_and_mixed_strategy(self):
+        rows = [
+            {
+                "source": {
+                    "id": "msg-2",
+                    "published_at": "2026-10-30T09:32:00+08:00",
+                    "content": "甲公司不建议买；乙公司暂不卖；丙公司高抛低吸",
+                },
+                "local_analysis": {
+                    "companies": ["甲公司", "乙公司", "丙公司"],
+                    "relevance": 5,
+                },
+            }
+        ]
+        self.assertEqual(_action_based_candidates(rows), [])
+
+    def test_latest_explicit_action_wins_and_overrides_model_direction(self):
+        rows = [
+            {
+                "source": {"id": "old", "published_at": "2026-10-30T09:00:00+08:00", "content": "甲公司低吸"},
+                "local_analysis": {"companies": ["甲公司"], "relevance": 4},
+            },
+            {
+                "source": {"id": "new", "published_at": "2026-10-30T10:00:00+08:00", "content": "甲公司高抛"},
+                "local_analysis": {"companies": ["甲公司"], "relevance": 4},
+            },
+        ]
+        candidates = _action_based_candidates(rows)
+        merged = _merge_action_candidates(
+            [{"name": "甲公司", "direction": "bull", "reason": "模型判断"}],
+            candidates,
+        )
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["direction"], "bear")
+        self.assertEqual(merged[0]["evidence_ids"], ["new"])
+
+    def test_backlog_is_processed_quickly_and_errors_retry(self):
+        self.assertEqual(worker_delay({"pending_remaining": 80}), 5)
+        self.assertEqual(worker_delay({"pending_remaining": 0}, failed=True), 120)
+        self.assertEqual(worker_delay({"pending_remaining": 0},
+                                      now=datetime(2026, 10, 30, 15, 30, tzinfo=CST)), 1800)
 
     def test_market_session_runs_every_minute(self):
         now = datetime(2026, 10, 30, 10, 0, tzinfo=CST)
