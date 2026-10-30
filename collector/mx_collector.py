@@ -275,18 +275,16 @@ def apply_room_identity(conn, rooms):
     for room in rooms:
         stable_id = str(room.get("stable_id") or "").strip()
         if stable_id:
-            pair = (room["name"], stable_id)
-            stable_counts[pair] = stable_counts.get(pair, 0) + 1
+            stable_counts[stable_id] = stable_counts.get(stable_id, 0) + 1
 
     for room in rooms:
         stable_id = str(room.get("stable_id") or "").strip()
         # An ID repeated by multiple rows is not a unique identity; keep the
         # verified DOM-position fallback rather than merging two conversations.
-        if not stable_id or stable_counts.get((room["name"], stable_id)) != 1:
+        if not stable_id or stable_counts.get(stable_id) != 1:
             continue
-        identity_key = hashlib.sha256(
-            (room["name"] + "\\0" + stable_id).encode("utf-8")
-        ).hexdigest()
+        # Key by the stable ID alone so a room rename does not create a new history.
+        identity_key = hashlib.sha256(stable_id.encode("utf-8")).hexdigest()
         previous = conn.execute(
             "SELECT room_key FROM room_identity WHERE identity_key=?",
             (identity_key,),
@@ -294,8 +292,8 @@ def apply_room_identity(conn, rooms):
         if previous:
             room["room_key"] = previous[0]
             conn.execute(
-                "UPDATE room_identity SET updated_at=? WHERE identity_key=?",
-                (now_iso(), identity_key),
+                "UPDATE room_identity SET room_name=?,stable_id=?,updated_at=? WHERE identity_key=?",
+                (room["name"], stable_id, now_iso(), identity_key),
             )
         else:
             # First observation adopts the legacy key, so the existing SQLite
