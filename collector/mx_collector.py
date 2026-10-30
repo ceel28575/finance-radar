@@ -98,6 +98,15 @@ def parse_time(raw):
     return None, "unparsed_raw_kept"
 
 
+def parse_time_for_archive(raw, collected_at=None):
+    published_at, rule = parse_time(raw)
+    if published_at:
+        return published_at, rule
+    # Do not silently discard records whose MX timestamp format is unfamiliar.
+    # Keep raw_time and explicitly mark the collection-time fallback for review.
+    return collected_at or now_iso(), "collected_at_fallback"
+
+
 def db():
     conn = sqlite3.connect(DB_FILE, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -432,7 +441,8 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
             if time_element:
                 raw_time = (time_element.get_attribute("datetime") or time_element.inner_text() or "").strip()
             sender = (meta.inner_text() or "").split("\n")[0].strip()
-        published_at, rule = parse_time(raw_time)
+        collected_at = now_iso()
+        published_at, rule = parse_time_for_archive(raw_time, collected_at)
 
         # Keep the same source key before/after OCR; OCR text is content, not identity.
         identity_content = text or "[媒体消息无正文，待解析]"
@@ -497,7 +507,7 @@ def extract_messages(page, room, conn=None, ocr_budget=None):
             "item_type": "chat", "source_key": key, "source": "MX", "room": room["name"],
             "room_key": room["room_key"], "author": sender[:80], "title": content[:60],
             "content": content, "published_at": published_at, "raw_time": raw_time, "time_rule": rule,
-            "collected_at": now_iso(), "parse_status": parse_status, "media": media,
+            "collected_at": collected_at, "parse_status": parse_status, "media": media,
             "history_key": history_key,
         })
     return items
