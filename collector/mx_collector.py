@@ -512,6 +512,7 @@ def collect_loop(conn):
             return
         print("已读到房间列表，开始采集；这不代表后端接入已完成。Ctrl+C 退出。")
         while True:
+            round_started = time.monotonic()
             total = done = backlog = unmapped = history_done = 0
             last_error = ""
             consecutive_failures = 0
@@ -565,7 +566,11 @@ def collect_loop(conn):
             save_status(conn, "collector", {"status": "collecting" if done else "failed", "stage": "round_complete",
                         "rooms_total": total, "rooms_done": done, "backlog": total - history_done,
                         "rooms_unmapped": unmapped, "rooms_duplicate": duplicates, "last_error": last_error})
-            time.sleep(SCAN_INTERVAL)
+            # Keep the scan start-to-start cadence near 60 seconds. A full
+            # 135-room sweep can exceed one minute; do not add another full
+            # minute of idle time after a slow round.
+            elapsed = max(0.0, time.monotonic() - round_started)
+            time.sleep(max(0.2, SCAN_INTERVAL - elapsed))
 
 
 def main():
